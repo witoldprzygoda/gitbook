@@ -1,0 +1,9 @@
+.git
+.env
+dist
+src
+node_modules
+__pycache__
+*.pyc
+*.zip
+data

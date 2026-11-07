@@ -1,0 +1,758 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Git &amp; GitHub Supervised Lab Engine</title>
+  <link rel="stylesheet" href="css/lab-theme.css?v=20261107g" />
+</head>
+<body>
+
+  <!-- GÓRNY PASEK NAWIGACJI, WYBORU PROFILU I PANELU ADMINA -->
+  <header class="topbar">
+    <div class="nav-left">
+      <!-- IKONKA ? (DEMONSTRACJA DZIAŁANIA SERWISU) NA SAMYM POCZĄTKU PASKA Z DYMKIEM HOVER -->
+      <div class="expandable-frame help-tour-wrap" id="tourHelpWrap">
+        <button class="btn-top btn-help-icon" id="btnTourTop" onclick="App.startTour()" aria-label="Demonstracja działania serwisu">?</button>
+        <div class="expandable-dropdown" id="tourHelpDropdown" style="min-width:320px;" onclick="event.stopPropagation()">
+          <div class="exp-hdr">
+            <svg class="ico2d" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6.5" fill="none" stroke="#38bdf8" stroke-width="1.6"/><polygon points="6.5,9.5 5,11.5 9.5,9.5 11,4.5" fill="#facc15"/></svg>
+            <span>Demonstracja działania tego serwisu</span>
+          </div>
+          <div class="exp-body" style="font-size:12px;">
+            Chcesz zobaczyć interaktywną demonstrację działania aplikacji? <b>Kliknij ikonkę ?</b>, a animowany kursor pokaże Ci po kolei wszystkie strefy ekranu i wyjaśni jak z nich korzystać.
+          </div>
+        </div>
+      </div>
+
+      <!-- MALUTKI PRZYCISK RESETU UKŁADU OKIENEK I BELEK PODZIAŁU Z DYMKIEM PODPOWIEDZI -->
+      <div class="expandable-frame help-tour-wrap" id="resetLayoutWrap">
+        <button class="btn-top btn-layout-icon" id="btnResetLayoutTop" onclick="App.resetLayout()" aria-label="Reset układu okienek">
+          <svg class="ico2d" viewBox="0 0 16 16"><rect x="1.5" y="2" width="13" height="12" rx="1.8" fill="none" stroke="currentColor" stroke-width="1.5"/><line x1="8.5" y1="2" x2="8.5" y2="14" stroke="currentColor" stroke-width="1.4"/><line x1="1.5" y1="9" x2="8.5" y2="9" stroke="currentColor" stroke-width="1.4"/><line x1="8.5" y1="7.5" x2="14.5" y2="7.5" stroke="currentColor" stroke-width="1.4"/></svg>
+        </button>
+        <div class="expandable-dropdown" id="resetLayoutDropdown" style="min-width:330px;" onclick="event.stopPropagation()">
+          <div class="exp-hdr">
+            <svg class="ico2d" viewBox="0 0 16 16"><rect x="1.5" y="2" width="13" height="12" rx="1.8" fill="none" stroke="#38bdf8" stroke-width="1.5"/><line x1="8.5" y1="2" x2="8.5" y2="14" stroke="#facc15" stroke-width="1.5"/><line x1="1.5" y1="9" x2="8.5" y2="9" stroke="#facc15" stroke-width="1.5"/><line x1="8.5" y1="7.5" x2="14.5" y2="7.5" stroke="#facc15" stroke-width="1.5"/></svg>
+            <span>Reset układu okienek i belek podziału (Alt+R)</span>
+          </div>
+          <div class="exp-body" style="font-size:12px;">
+            Przesunąłeś za mocno belki podziału lub zwinąłeś panele? <b>Kliknij tę ikonkę</b> (albo kliknij dwukrotnie dowolną belkę podziału <code>║</code> / <code>══</code>), aby przywrócić optymalny układ 4 stref ekranu.
+          </div>
+        </div>
+      </div>
+
+      <button class="btn-top btn-drawer" onclick="App.toggleDrawer()" id="btnDrawer">☰ Mapa Kursu (0 / 0)</button>
+
+      <!-- PRZEŁĄCZNIK POZIOMU KURSU (PODSTAWOWY / ROZSZERZONY / ZAAWANSOWANY / WSZYSTKIE) -->
+      <select id="profileSelectTop" class="profile-select" onchange="App.switchProfile(this.value)" title="Wybierz poziom kursu (Podstawowy, Rozszerzony, Zaawansowany lub Wszystkie połączone razem)"></select>
+      <span id="lockedProfileBadge" class="scorm-indicator" style="display:none;"></span>
+
+      <!-- STRZAŁKA: POPRZEDNI KROK (PO LEWEJ OD MENU Z MODUŁEM) -->
+      <button class="btn-top btn-step-arrow" id="btnPrevStepTop" onclick="App.prevStep()" title="Poprzedni krok">◀</button>
+
+      <!-- ROZWIJANA DO DOŁU RAMKA BREADCRUMB (PO NAJECHANIU MYSZKĄ LUB KLIKNIĘCIU) -->
+      <div class="expandable-frame" id="topBreadcrumbWrap" onclick="App.togglePinExpandable('topBreadcrumbWrap', event)" title="Najedź myszką lub kliknij, aby rozwinąć pełną nazwę modułu i kroku">
+        <div class="expandable-summary">
+          <span class="breadcrumb-short" id="topBreadcrumb">Moduł 00 ▸ Krok 0.1</span>
+          <span class="expand-caret">▾</span>
+        </div>
+        <div class="expandable-dropdown" id="topBreadcrumbDropdown" onclick="event.stopPropagation()">
+          <div class="exp-hdr">
+            <svg class="ico2d" viewBox="0 0 16 16"><path d="M8 1.5a4.5 4.5 0 0 0-4.5 4.5c0 3.2 4.5 8.5 4.5 8.5s4.5-5.3 4.5-8.5A4.5 4.5 0 0 0 8 1.5zm0 6.2a1.7 1.7 0 1 1 0-3.4 1.7 1.7 0 0 1 0 3.4z" fill="#f87171"/></svg>
+            <span>Aktualnie otwarta lekcja (kliknij ramkę powyżej, aby przypiąć/odpiąć)</span>
+          </div>
+          <div id="topBreadcrumbFull" class="exp-body"></div>
+          <div style="margin-top:8px; padding-top:8px; border-top:1px solid #334155; display:flex; align-items:center; justify-content:space-between; gap:8px;">
+            <span style="font-size:11px; color:#94a3b8;">Kroki w tym module:</span>
+            <div class="local-dots" id="localDots"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- STRZAŁKA: NASTĘPNY KROK (SAMA STRZAŁKA PO PRAWEJ OD MENU Z MODUŁEM) -->
+      <button class="btn-top btn-step-arrow" id="btnNextStepTop" onclick="App.nextStep()" title="Następny krok">▶</button>
+    </div>
+
+    <div class="nav-right">
+      <!-- PRZYCISK FEEDBACK (NA LEWO OD START) Z MIKRO-DIODĄ STANU I ROZWIJANYM OPISEM -->
+      <div class="expandable-frame help-tour-wrap" id="feedbackTopWrap" onclick="App.togglePinExpandable('feedbackTopWrap', event)">
+        <button class="btn-top btn-feedback-top" id="btnFeedbackTop" type="button" aria-label="Zgłoś uwagę lub błąd (Feedback)">
+          <svg class="ico2d" viewBox="0 0 16 16">
+            <path d="M2 2.5h12a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1H6.2L3 14.2V11.5H2a1 1 0 0 1-1-1v-7a1 1 0 0 1 1-1z" fill="none" stroke="#38bdf8" stroke-width="1.5" stroke-linejoin="round"/>
+            <line x1="4.5" y1="5.5" x2="11.5" y2="5.5" stroke="#facc15" stroke-width="1.4" stroke-linecap="round"/>
+            <line x1="4.5" y1="8.2" x2="9.2" y2="8.2" stroke="#38bdf8" stroke-width="1.4" stroke-linecap="round"/>
+          </svg>
+          <span>Feedback</span>
+          <span id="feedbackLedDot" class="feedback-led led-none" title="Brak wysłanych zgłoszeń"></span>
+        </button>
+        <div class="expandable-dropdown drop-right" id="feedbackTopDropdown" style="min-width:370px; max-width:430px;" onclick="event.stopPropagation()">
+          <div class="exp-hdr" style="justify-content:space-between; gap:8px;">
+            <span style="display:inline-flex; align-items:center; gap:6px;">
+              <svg class="ico2d" viewBox="0 0 16 16"><path d="M2 2.5h12a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1H6.2L3 14.2V11.5H2a1 1 0 0 1-1-1v-7a1 1 0 0 1 1-1z" fill="none" stroke="#facc15" stroke-width="1.5"/></svg>
+              <span>Aplikacja w fazie testów — Zgłoś spostrzeżenia</span>
+            </span>
+            <span id="feedbackDropdownLedBadge" class="feedback-status-pill pill-none">Brak zgłoszeń</span>
+          </div>
+          <div class="exp-body" style="font-size:12px; line-height:1.48;">
+            <p style="margin-bottom:8px; color:#cbd5e1;">
+              Ta aplikacja znajduje się obecnie w <b style="color:#facc15;">fazie testów</b>. Bardzo proszę o zgłaszanie wszelkich spostrzeżeń: zauważonych błędów w jakimkolwiek aspekcie działania (treści, głosu lektora, synchronizacji wskaźnika, terminala), a także rzeczy, które warto zmienić lub ulepszyć.
+            </p>
+            <div id="feedbackDropdownStatusBox" style="background:#162032; border:1px solid #334155; border-radius:6px; padding:6px 9px; margin-bottom:8px; font-size:11.5px; color:#94a3b8;">
+              Mikro-dioda na przycisku pokazuje stan Twoich zgłoszeń: <b style="color:#fbbf24;">● Zgłoszone</b>, <b style="color:#38bdf8;">● Odczytane</b> lub <b style="color:#4ade80;">● Przyszła odpowiedź</b>.
+            </div>
+            <a href="javascript:void(0)" class="feedback-open-link" onclick="App.openFeedbackModal(event)">
+              <span>✍️ Kliknij tutaj, aby wpisać uwagę lub otworzyć korespondencję z Adminem</span>
+              <span>▸</span>
+            </a>
+          </div>
+        </div>
+      </div>
+
+      <!-- PRZYCISKI PAUZA / START / STOP Z ODSTĘPEM PO LEWEJ I PRAWEJ STRONIE -->
+      <div class="director-top-group">
+        <button class="btn-top btn-pause-icon" id="btnDirectorPauseTop" onclick="App.togglePauseDirector()" style="display:none;" title="Wstrzymaj / Wznów narrację lektora (Spacja)">
+          <svg class="ico2d" viewBox="0 0 16 16"><rect x="3.5" y="2.8" width="3.2" height="10.4" rx="0.8" fill="currentColor"/><rect x="9.3" y="2.8" width="3.2" height="10.4" rx="0.8" fill="currentColor"/></svg>
+        </button>
+        <button class="btn-top btn-director" id="btnDirector" onclick="App.toggleDirector()" title="Uruchom narrację głosową lektora i automatyczne wskazywanie elementów na ekranie (START)">
+          <svg class="ico2d" viewBox="0 0 16 16"><polygon points="4,2.5 13.5,8 4,13.5" fill="currentColor"/></svg>
+          <span>START</span>
+        </button>
+      </div>
+
+      <!-- W KOLEJNOŚCI OD LEWEJ DO PRAWEJ: ZAPISZ, WCZYTAJ, SESJA/KOD, AUTOZAPIS ORAZ ADMIN (Z MAŁĄ PRZERWĄ) -->
+      <button class="btn-top" id="btnSaveTop" onclick="StorageManager.exportSessionToFile()" title="Wybierz miejsce na dysku i zapisz pełny stan sesji do pliku .json">
+        <svg class="ico2d" viewBox="0 0 16 16"><path d="M2.5 2h9l2.5 2.5v9a.5.5 0 0 1-.5.5h-11a.5.5 0 0 1-.5-.5v-11a.5.5 0 0 1 .5-.5z" fill="none" stroke="#38bdf8" stroke-width="1.5"/><rect x="5" y="2" width="5" height="4" fill="#38bdf8"/><rect x="4.5" y="9" width="7" height="4.5" rx="0.6" fill="#e2e8f0"/></svg>
+        <span>Zapisz...</span>
+      </button>
+      <button class="btn-top" id="btnLoadTop" onclick="document.getElementById('fileImportInput').click()" title="Wczytaj zapisany plik sesji .json z dysku">
+        <svg class="ico2d" viewBox="0 0 16 16"><path d="M1.5 3.5h5l1.5 1.8h6.5v7.7a1 1 0 0 1-1 1h-12a1 1 0 0 1-1-1V3.5z" fill="#facc15" stroke="#ca8a04" stroke-width="1"/></svg>
+        <span>Wczytaj</span>
+      </button>
+      <input type="file" id="fileImportInput" accept=".json" style="display:none" onchange="StorageManager.importSessionFromFile(event)" />
+      <button class="btn-top" id="btnUserSessionTop" onclick="App.openUserSessionModal()" title="Zanim zaczniesz: Twój Kod Postępu (GLAB-...), tryb Prywatny / Wspólny PC oraz odtwarzanie stanu bez logowania">
+        <svg class="ico2d" viewBox="0 0 16 16"><circle cx="5.5" cy="8" r="3.5" fill="none" stroke="#facc15" stroke-width="1.6"/><circle cx="5" cy="8" r="1" fill="#facc15"/><path d="M9 8h5.5M12 8v2.5M14.2 8v2.5" stroke="#facc15" stroke-width="1.6" stroke-linecap="round"/></svg>
+        <span>Sesja / Kod</span>
+      </button>
+      <span class="scorm-indicator" id="scormStatusBadge" title="Status autozapisu i połączenia z platformą Moodle (SCORM 1.2)">Autozapis: aktywny</span>
+      <button class="btn-top btn-admin" id="btnAdminTop" onclick="App.toggleAdminModal()" title="Panel Administratora / Instruktora, Autozapis i Konfigurator Poziomów Kursu (Ctrl+Shift+A)">
+        <svg class="ico2d" viewBox="0 0 16 16"><circle cx="8" cy="8" r="2.4" fill="none" stroke="#a5b4fc" stroke-width="1.6"/><path d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.4 3.4l1.4 1.4M11.2 11.2l1.4 1.4M12.6 3.4l-1.4 1.4M4.8 11.2l-1.4 1.4" stroke="#a5b4fc" stroke-width="1.6" stroke-linecap="round"/></svg>
+        <span>Admin</span>
+        <span id="adminUnreadFeedbackBadge" class="admin-fb-badge" style="display:none;">0</span>
+      </button>
+    </div>
+  </header>
+  <div class="progress-line"><div class="progress-fill" id="topProgressFill"></div></div>
+
+  <!-- UKRYTY ODTWARZACZ AUDIO DLA PLIKÓW MP3 Z ELEVENLABS -->
+  <audio id="elevenAudioPlayer" preload="auto"></audio>
+
+  <!-- PŁYWAJĄCE PÓŁPRZEZROCZYSTE KÓŁECZKO WSKAŹNIKA UWAGI PODCZAS NARRACJI LEKTORA -->
+  <div id="directorOrb" class="director-orb" style="display:none;"></div>
+
+  <!-- INTERAKTYWNY OBCHÓD PO APLIKACJI Z ANIMOWANYM KURSOREM-WSKAŹNIKIEM 2D -->
+  <div id="tourOverlay" class="tour-overlay" style="display:none;">
+    <div id="tourSpotlight" class="tour-spotlight"></div>
+    <div id="tourCursor" class="tour-cursor">
+      <svg class="tour-cursor-icon" width="28" height="28" viewBox="0 0 24 24">
+        <path d="M4 2L20 10.5L12.5 13L16 20.5L13 22L9.5 14.5L4 19V2Z" fill="#facc15" stroke="#0f172a" stroke-width="2" stroke-linejoin="round"/>
+      </svg>
+      <span class="tour-cursor-ring"></span>
+    </div>
+    <div id="tourCard" class="tour-card">
+      <div class="tour-card-hdr">
+        <span id="tourStepBadge" class="voice-badge">OBCHÓD 1 / 12</span>
+        <button class="btn-top btn-xs" onclick="App.stopTour()">✕ Zakończ pokaz</button>
+      </div>
+      <h3 id="tourTitle" style="font-size:15px; color:#f8fafc; margin:6px 0 4px;">Tytuł strefy</h3>
+      <p id="tourDesc" style="font-size:12.5px; color:#cbd5e1; line-height:1.5;"></p>
+      <div class="tour-card-ftr">
+        <label style="font-size:11.5px; color:#38bdf8; display:flex; align-items:center; gap:5px; cursor:pointer;">
+          <input type="checkbox" id="chkTourAuto" onchange="App.toggleTourAuto(this.checked)" />
+          <span>Automatyczny pokaz (co 5 s)</span>
+        </label>
+        <div style="display:flex; gap:6px;">
+          <button class="btn-top btn-xs" id="btnTourPrev" onclick="App.prevTourStep()">◀ Wstecz</button>
+          <button class="btn-top btn-xs btn-next-step" id="btnTourNext" onclick="App.nextTourStep()">Dalej ▶</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL „ZANIM ZACZNIESZ” — INDYWIDUALNA SESJA UŻYTKOWNIKA, TRYB KOMPUTERA I KOD POSTĘPU GLAB -->
+  <div class="modal-backdrop" id="userSessionModalBackdrop" onclick="if(event.target===this)App.closeUserSessionModal()">
+    <div class="admin-modal" style="max-width:920px;">
+      <div class="admin-modal-hdr">
+        <div>
+          <span class="kicker" style="color:#facc15;">TWOJA INDYWIDUALNA SESJA (BEZ KONTA, BEZ PIN-ÓW I BEZ HASEŁ)</span>
+          <h2 style="font-size:17px; color:#fff; display:flex; align-items:center; gap:7px;">
+            <svg class="ico2d" viewBox="0 0 16 16"><circle cx="5.5" cy="8" r="3.5" fill="none" stroke="#facc15" stroke-width="1.6"/><circle cx="5" cy="8" r="1" fill="#facc15"/><path d="M9 8h5.5M12 8v2.5M14.2 8v2.5" stroke="#facc15" stroke-width="1.6" stroke-linecap="round"/></svg>
+            <span>Zanim zaczniesz — Jak zachować swój postęp w kursie?</span>
+          </h2>
+        </div>
+        <button class="btn-top" onclick="App.closeUserSessionModal()">✕ Zamknij</button>
+      </div>
+
+      <div class="admin-modal-body" style="gap:12px;">
+        <div class="admin-grid-top">
+          <!-- Karta 1: Wybór trybu komputera (Prywatny vs Wspólny / Pracownia) -->
+          <div class="admin-box" style="display:flex; flex-direction:column; justify-content:space-between;">
+            <div>
+              <h4>1. Na jakim komputerze teraz pracujesz? (Co musisz ustawić)</h4>
+              <p style="font-size:12px; color:#94a3b8; margin-bottom:8px; line-height:1.45;">
+                Wybierz odpowiedni tryb zapisu, aby zachować swój postęp i nie zostawić go obcym osobom na wspólnym stanowisku:
+              </p>
+
+              <label class="admin-chk" style="background:#0f172a; border:1px solid #334155; border-radius:6px; padding:8px 10px; margin-bottom:7px; align-items:flex-start;">
+                <input type="radio" name="deviceStorageMode" id="radStoragePrivate" value="private" onchange="App.setDeviceStorageMode('private')" style="margin-top:3px;" />
+                <span style="line-height:1.4;">
+                  <b style="color:#4ade80;">Prywatny komputer (domowy / własny laptop)</b><br/>
+                  <span style="font-size:11.5px; color:#cbd5e1;">Twój stan zapisuje się automatycznie na stałe w tej przeglądarce (<code>localStorage</code>). Gdy wrócisz jutro na tę stronę, kurs wznowi się dokładnie tam, gdzie skończyłeś.</span>
+                </span>
+              </label>
+
+              <label class="admin-chk" style="background:#0f172a; border:1px solid #334155; border-radius:6px; padding:8px 10px; margin-bottom:8px; align-items:flex-start;">
+                <input type="radio" name="deviceStorageMode" id="radStorageShared" value="shared" onchange="App.setDeviceStorageMode('shared')" style="margin-top:3px;" />
+                <span style="line-height:1.4;">
+                  <b style="color:#facc15;">Wspólny / publiczny komputer (pracownia, biblioteka)</b><br/>
+                  <span style="font-size:11.5px; color:#cbd5e1;">Sesja tymczasowa (<code>sessionStorage</code>) — znika automatycznie po zamknięciu karty, dzięki czemu kolejna osoba przy tym samym komputerze i IP nie wejdzie na Twój postęp. <b>Przed odejściem od komputera skopiuj swój Kod Postępu (obok) lub pobierz plik <code>.json</code>!</b></span>
+                </span>
+              </label>
+            </div>
+
+            <div style="padding-top:6px; border-top:1px solid #334155; display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap;">
+              <span style="font-size:11px; color:#94a3b8;">Kończysz pracę na cudzym komputerze?</span>
+              <button class="btn-top btn-xs" style="border-color:#ef4444; color:#fca5a5;" onclick="App.clearSessionAndReset()">Wyczyść sesję z tego komputera</button>
+            </div>
+          </div>
+
+          <!-- Karta 2: Kod Postępu GLAB-XXXX-XXXX-XXXX oraz wznawianie -->
+          <div class="admin-box">
+            <h4>2. Twój osobisty Kod Postępu (Zamiast loginu, hasła i PIN-u)</h4>
+            <p style="font-size:12px; color:#94a3b8; margin-bottom:7px; line-height:1.45;">
+              Każde zaliczone ćwiczenie natychmiast aktualizuje poniższy <b>Kod Postępu</b>. Zapisz go w notatniku, telefonie lub wyślij sobie na e-mail — albo skopiuj gotowy <b>Link Wznowienia</b> do zakładek:
+            </p>
+
+            <div style="background:#020617; border:1px solid #38bdf8; border-radius:6px; padding:8px 10px; margin-bottom:8px; display:flex; align-items:center; justify-content:space-between; gap:8px; flex-wrap:wrap;">
+              <div>
+                <div style="font-size:10px; font-weight:800; color:#38bdf8; text-transform:uppercase; letter-spacing:0.06em;">Twój aktualny Kod Postępu (<span id="progressCodeStatsLabel">0/41 kroków</span>):</div>
+                <div id="currentProgressCodeDisplay" style="font-family:var(--mono); font-size:15px; font-weight:800; color:#facc15; letter-spacing:0.06em; margin-top:2px;">GLAB-0000-0000-0000</div>
+              </div>
+              <div style="display:flex; gap:5px; flex-wrap:wrap;">
+                <button class="btn-top btn-xs btn-director" onclick="App.copyProgressCode()">Kopiuj Kod</button>
+                <button class="btn-top btn-xs" onclick="App.copyProgressLink()" title="Kopiuj bezpośredni adres URL z zaszytym kodem postępu">Kopiuj Link URL</button>
+              </div>
+            </div>
+
+            <div style="border-top:1px solid #334155; padding-top:8px;">
+              <label style="font-size:11.5px; font-weight:700; color:#e2e8f0; display:block; margin-bottom:5px;">Masz już zapisany Kod Postępu z poprzednich zajęć lub z innego komputera?</label>
+              <div style="display:flex; gap:6px;">
+                <input type="text" id="restoreProgressCodeInput" class="search-in" style="font-family:var(--mono); text-transform:uppercase;" placeholder="Wklej kod np. GLAB-XXXX-XXXX-XXXX..." onkeydown="if(event.key==='Enter')App.applyProgressCodeFromInput()" />
+                <button class="btn-top btn-next-step" style="white-space:nowrap;" onclick="App.applyProgressCodeFromInput()">Odtwórz postęp ▶</button>
+              </div>
+              <div id="progressCodeFeedback" style="display:none; font-size:11.5px; font-weight:700; margin-top:5px;"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Sekcja: Co JEST, a co NIE JEST gwarantowane -->
+        <div class="admin-box" style="background:#162032; border-color:#475569;">
+          <h4 style="color:#facc15; margin-bottom:6px;">3. Co JEST, a co NIE JEST gwarantowane — przeczytaj uważnie!</h4>
+          <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px; font-size:12px; color:#cbd5e1; line-height:1.48;">
+            <div style="background:#0f172a; border-left:3px solid #22c55e; padding:8px 10px; border-radius:4px;">
+              <b style="color:#4ade80; display:block; margin-bottom:3px;">✓ Co JEST gwarantowane:</b>
+              • <b>Kod Postępu (<code>GLAB-XXXX-XXXX-XXXX</code>)</b> zawiera zaszyte binarnie wszystkie zaliczone przez Ciebie kroki (<code>✓</code>), wybrany poziom kursu, numer bieżącej lekcji oraz sumę kontrolną CRC (wykrywa literówki). Działa na każdym komputerze i w każdej przeglądarce bez logowania.<br/>
+              • <b>Plik sesji <code>.json</code> (przyciski „Zapisz...” / „Wczytaj” na górnym pasku)</b> zapisuje dodatkowo pełny stan roboczy plików w edytorze VFS w trakcie jeszcze niezaliczonego zadania.
+            </div>
+            <div style="background:#0f172a; border-left:3px solid #f59e0b; padding:8px 10px; border-radius:4px;">
+              <b style="color:#facc15; display:block; margin-bottom:3px;">⚠ Co NIE JEST gwarantowane (obowiązki użytkownika):</b>
+              • <b>Brak bazy kont, haseł i PIN-ów na serwerze:</b> W wersji otwartej serwis nie zbiera żadnych danych osobowych. Jeśli pracujesz na wspólnym komputerze (lub wyczyścisz dane przeglądarki) i <b>nie skopiujesz swojego Kodu <code>GLAB-...</code> ani nie pobierzesz pliku <code>.json</code>, nikt (nawet administrator) nie będzie w stanie odtworzyć Twojego postępu</b>.<br/>
+              • Sam krótki kod <code>GLAB-...</code> przywraca zaliczone kroki (<code>✓</code>), ale nie przenosi niezatwierdzonych zmian w plikach z niedokończonego kroku (do tego służy plik <code>.json</code>).
+            </div>
+          </div>
+        </div>
+
+        <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap;">
+          <span style="font-size:11.5px; color:#94a3b8;">Do tego okna wrócisz w każdej chwili klikając przycisk <b>„Sesja / Kod”</b> na górnym pasku.</span>
+          <button class="btn-top btn-director" style="padding:7px 16px; font-size:13px;" onclick="App.confirmUserSessionModal()">Rozumiem zasady — Przejdź do kursu ▶</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL ZGŁASZANIA UWAG (FEEDBACK) I ANONIMOWEJ KORESPONDENCJI Z ADMINISTRATOREM -->
+  <div class="modal-backdrop" id="feedbackModalBackdrop" onclick="if(event.target===this)App.closeFeedbackModal()">
+    <div class="admin-modal" style="max-width:920px;">
+      <div class="admin-modal-hdr">
+        <div>
+          <span class="kicker" style="color:#facc15;">WERSJA TESTOWA — ZGŁASZANIE SPOSTRZEŻEŃ, BŁĘDÓW I SUGESTII</span>
+          <h2 style="font-size:17px; color:#fff; display:flex; align-items:center; gap:8px;">
+            <svg class="ico2d" viewBox="0 0 16 16"><path d="M2 2.5h12a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1H6.2L3 14.2V11.5H2a1 1 0 0 1-1-1v-7a1 1 0 0 1 1-1z" fill="none" stroke="#38bdf8" stroke-width="1.6" stroke-linejoin="round"/></svg>
+            <span>Twoje spostrzeżenia i korespondencja z Administratorem</span>
+          </h2>
+        </div>
+        <div style="display:flex; gap:6px; align-items:center;">
+          <button class="btn-top btn-xs" onclick="App.syncFeedbackWithServer(true)" title="Sprawdź, czy nadeszła nowa odpowiedź od Administratora">↻ Odśwież</button>
+          <button class="btn-top" onclick="App.closeFeedbackModal()">✕ Zamknij</button>
+        </div>
+      </div>
+
+      <div class="admin-modal-body" style="gap:12px;">
+        <div class="admin-grid-top" style="grid-template-columns: 1fr 1.25fr;">
+          <!-- Lewa kolumna: Formularz nowego zgłoszenia -->
+          <div class="admin-box" style="display:flex; flex-direction:column; justify-content:space-between; gap:8px;">
+            <div>
+              <h4>1. Wyślij nowe spostrzeżenie lub zgłoś błąd</h4>
+              <p style="font-size:12px; color:#94a3b8; margin-bottom:7px; line-height:1.45;">
+                Każda uwaga jest niezwykle cenna! Zgłoszenie zostanie zapisane w Twojej historii kursu (działa z przyciskami <b>Zapisz... / Wczytaj</b> oraz z Twoim kodem <code>GLAB-...</code>).
+              </p>
+
+              <label style="font-size:11.5px; font-weight:700; color:#e2e8f0; display:block; margin-bottom:4px;">Czego dotyczy zgłoszenie? (możesz zaznaczyć kilka):</label>
+              <div id="feedbackScopesWrap" class="fb-scopes-wrap">
+                <label class="fb-scope-chip">
+                  <input type="checkbox" id="fbScopeGeneral" value="Ogólne" checked />
+                  <span>Ogólne (cała aplikacja / układ)</span>
+                </label>
+                <label class="fb-scope-chip">
+                  <input type="checkbox" id="fbScopeStep" value="step" />
+                  <span>Tego kroku (<b id="feedbackCurrentStepLabel" style="color:#38bdf8;">Moduł 00 ▸ Krok 0.1</b>)</span>
+                </label>
+                <label class="fb-scope-chip">
+                  <input type="checkbox" id="fbScopeAudio" value="Lektor / wskaźnik" />
+                  <span>Lektor / wskaźnik</span>
+                </label>
+                <label class="fb-scope-chip">
+                  <input type="checkbox" id="fbScopeTerm" value="Terminal / zadanie" />
+                  <span>Terminal / ćwiczenie</span>
+                </label>
+                <label class="fb-scope-chip">
+                  <input type="checkbox" id="fbScopeContent" value="Treść / propozycja" />
+                  <span>Treść / propozycja zmiany</span>
+                </label>
+              </div>
+
+              <label style="font-size:11.5px; font-weight:700; color:#e2e8f0; display:block; margin-bottom:4px;">Treść spostrzeżenia / opis błędu / propozycja zmiany:</label>
+              <textarea id="feedbackTextInput" class="vfs-textarea" style="height:100px; font-family:inherit; font-size:12.5px; margin-bottom:8px; resize:vertical;" placeholder="Napisz, co zauważyłeś, co działa niepoprawnie lub co warto ulepszyć..."></textarea>
+
+              <label style="font-size:11.5px; font-weight:700; color:#e2e8f0; display:block; margin-bottom:4px;">Twój podpis lub pseudonim (opcjonalnie):</label>
+              <input type="text" id="feedbackAuthorInput" class="search-in" style="margin-bottom:8px;" placeholder="np. Janek, Tester_01 (lub zostaw puste = Anonim)" />
+            </div>
+
+            <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; padding-top:6px; border-top:1px solid #334155;">
+              <span style="font-size:11px; color:#94a3b8;">100% anonimowo • bez podawania e-maila</span>
+              <button class="btn-top btn-director" style="padding:6px 14px;" onclick="App.submitNewFeedback()">Wyślij zgłoszenie ▶</button>
+            </div>
+          </div>
+
+          <!-- Prawa kolumna: Historia zgłoszeń użytkownika i odpowiedzi Admina -->
+          <div class="admin-box" style="display:flex; flex-direction:column; max-height:420px;">
+            <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; margin-bottom:6px; flex-wrap:wrap;">
+              <h4 style="margin-bottom:0;">2. Twoja historia zgłoszeń i odpowiedzi Admina</h4>
+              <div style="display:flex; gap:8px; font-size:10.5px; color:#cbd5e1; align-items:center;">
+                <span style="display:inline-flex; align-items:center; gap:4px;"><span class="feedback-led led-submitted" style="position:static;"></span> Zgłoszone</span>
+                <span style="display:inline-flex; align-items:center; gap:4px;"><span class="feedback-led led-read" style="position:static;"></span> Odczytane</span>
+                <span style="display:inline-flex; align-items:center; gap:4px;"><span class="feedback-led led-replied-unread" style="position:static;"></span> Odpowiedź</span>
+              </div>
+            </div>
+            <div id="feedbackUserThreadsList" style="flex:1; overflow-y:auto; display:flex; flex-direction:column; gap:8px; padding-right:4px;"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL LOGOWANIA INSTRUKTORA DO PANELU ADMINA -->
+  <div class="modal-backdrop" id="adminLoginModalBackdrop" onclick="if(event.target===this)App.closeAdminLoginModal()">
+    <div class="admin-modal" style="max-width:440px;">
+      <div class="admin-modal-hdr">
+        <div>
+          <span class="kicker" style="color:#facc15;">STREFA CHRONIONA INSTRUKTORA</span>
+          <h2 style="font-size:16px; color:#fff; display:flex; align-items:center; gap:7px;">
+            <svg class="ico2d" viewBox="0 0 16 16"><path d="M8 1.5l5.5 2.2v4.1c0 3.5-2.3 5.8-5.5 6.9-3.2-1.1-5.5-3.4-5.5-6.9V3.7L8 1.5z" fill="#38bdf8" stroke="#0284c7" stroke-width="1.1"/></svg>
+            <span>Logowanie do Panelu Admina</span>
+          </h2>
+        </div>
+        <button class="btn-top btn-xs" onclick="App.closeAdminLoginModal()">✕</button>
+      </div>
+      <div class="admin-modal-body" style="gap:10px;">
+        <p style="font-size:12.5px; color:#cbd5e1; line-height:1.45;">
+          Podaj hasło Instruktora, aby odblokować konfigurator aktywnych poziomów kursu, polityk oceniania oraz opcji eksportu Moodle:
+        </p>
+        <input type="password" id="adminPassInput" class="search-in" placeholder="Wpisz hasło Instruktora (domyślne: git2026)..." onkeydown="if(event.key==='Enter')App.submitAdminLogin()" />
+        <div id="adminLoginError" style="display:none; font-size:12px; font-weight:700; color:#f87171;">Nieprawidłowe hasło Instruktora.</div>
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-top:4px;">
+          <span style="font-size:11px; color:#94a3b8;">Skrót klawiszowy: <code>Ctrl+Shift+A</code></span>
+          <div style="display:flex; gap:6px;">
+            <button class="btn-top" onclick="App.closeAdminLoginModal()">Anuluj</button>
+            <button class="btn-top btn-director" onclick="App.submitAdminLogin()">Odblokuj Panel ▶</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL PANELU ADMINISTRATORA (KONFIGURATOR AKTYWNYCH POZIOMÓW, BEZPIECZEŃSTWA I AUTOZAPISU) -->
+  <div class="modal-backdrop" id="adminModalBackdrop" onclick="if(event.target===this)App.toggleAdminModal()">
+    <div class="admin-modal">
+      <div class="admin-modal-hdr">
+        <div>
+          <span class="kicker" style="color:#facc15;">KONFIGURATOR DYDAKTYCZNY, AKTYWNE POZIOMY I BEZPIECZEŃSTWO</span>
+          <h2 style="font-size:17px; color:#fff; display:flex; align-items:center; gap:7px;">
+            <svg class="ico2d" viewBox="0 0 16 16"><circle cx="8" cy="8" r="2.4" fill="none" stroke="#38bdf8" stroke-width="1.6"/><path d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.4 3.4l1.4 1.4M11.2 11.2l1.4 1.4M12.6 3.4l-1.4 1.4M4.8 11.2l-1.4 1.4" stroke="#38bdf8" stroke-width="1.6" stroke-linecap="round"/></svg>
+            <span>Panel Administratora / Instruktora Kursu</span>
+          </h2>
+        </div>
+        <div style="display:flex; gap:6px;">
+          <button class="btn-top" style="border-color:#f59e0b; color:#facc15;" onclick="App.logoutAdmin()" title="Zablokuj ponownie Panel Admina (wymagaj ponownego podania hasła)">Zablokuj / Wyloguj</button>
+          <button class="btn-top" onclick="App.toggleAdminModal()">✕ Zamknij</button>
+        </div>
+      </div>
+
+      <div class="admin-modal-body">
+        <div class="admin-grid-top">
+          <!-- Karta 1: Wybór aktywnych poziomów -->
+          <div class="admin-box">
+            <h4>1. Które Poziomy Kursu mają być Aktywne?</h4>
+            <p style="font-size:12px; color:#94a3b8; margin-bottom:6px;">Możesz wybrać gotowy wariant z listy albo zaznaczyć poniżej dokładnie te poziomy, które chcesz udostępnić (np. <b>sam Rozszerzony</b> bez Podstawowego):</p>
+            <select id="adminProfileSelect" class="search-in" style="margin-bottom:8px;" onchange="App.switchProfile(this.value)"></select>
+            <div style="background:#0f172a; border:1px solid #334155; border-radius:6px; padding:7px 10px; margin-bottom:8px; display:flex; flex-direction:column; gap:5px;">
+              <span style="font-size:11px; font-weight:800; color:#38bdf8; text-transform:uppercase;">Aktywne poziomy zagadnień (możesz zaznaczyć dowolną kombinację):</span>
+              <label class="admin-chk" style="margin-bottom:0;">
+                <input type="checkbox" id="chkTierBasic" onchange="App.toggleEnabledTier()" />
+                <span><b>Poziom Podstawowy (basic)</b> — fundamenty codziennej pracy</span>
+              </label>
+              <label class="admin-chk" style="margin-bottom:0;">
+                <input type="checkbox" id="chkTierExtended" onchange="App.toggleEnabledTier()" />
+                <span><b>Poziom Rozszerzony (extended)</b> — praca na 3 obszarach, konflikty, rebase</span>
+              </label>
+              <label class="admin-chk" style="margin-bottom:0;">
+                <input type="checkbox" id="chkTierAdvanced" onchange="App.toggleEnabledTier()" />
+                <span><b>Poziom Zaawansowany (advanced)</b> — Plumbing, obiekty .git, refspec</span>
+              </label>
+            </div>
+            <label class="admin-chk">
+              <input type="checkbox" id="chkLockProfile" onchange="App.updateAdminPolicy()" />
+              <span>Zablokuj zmianę poziomu przez użytkownika (ukryj listę na górnym pasku — użytkownik widzi tylko zaznaczone wyżej poziomy)</span>
+            </label>
+            <label class="admin-chk">
+              <input type="checkbox" id="chkInstructorUnlock" onchange="App.setInstructorMode(this.checked)" />
+              <span>Tryb Instruktora (omija blokadę sekwencyjną kroków, gdy jest ona włączona w karcie obok)</span>
+            </label>
+          </div>
+
+          <!-- Karta 2: Polityki dydaktyczne, Autozapis i Logowanie Instruktora -->
+          <div class="admin-box">
+            <h4>2. Polityki Nadzoru, Autozapis i Logowanie Instruktora</h4>
+            <label class="admin-chk">
+              <input type="checkbox" id="chkSequential" onchange="App.updateAdminPolicy()" />
+              <span>Wymuszaj sekwencyjne zaliczanie zadań (Krok N odblokowuje N+1 — przydatne na Moodle)</span>
+            </label>
+            <label class="admin-chk">
+              <input type="checkbox" id="chkAllowHints" onchange="App.updateAdminPolicy()" />
+              <span>Udostępnij przycisk „Podpowiedź” w zadaniach (wyłącz np. na kolokwium)</span>
+            </label>
+            <label class="admin-chk">
+              <input type="checkbox" id="chkShowBadges" onchange="App.updateAdminPolicy()" />
+              <span>Pokazuj plakietki trudności [PODST / ROZSZ / ZAAW] w Mapie Kursu</span>
+            </label>
+            <div style="margin-top:6px; padding-top:6px; border-top:1px solid #334155; display:flex; align-items:center; justify-content:space-between; gap:8px; flex-wrap:wrap;">
+              <label class="admin-chk" style="margin-bottom:0;">
+                <input type="checkbox" id="chkAutoSave" onchange="App.updateAdminPolicy()" />
+                <span>Okresowy Autozapis stanu sesji co:</span>
+              </label>
+              <select id="selAutoSaveInterval" class="vfs-select" onchange="App.updateAdminPolicy()">
+                <option value="15">15 sekund</option>
+                <option value="30">30 sekund (zalecane)</option>
+                <option value="60">60 sekund</option>
+                <option value="120">2 minuty</option>
+              </select>
+            </div>
+            <!-- Awaryjny wybór głosu lektora -->
+            <div style="margin-top:6px; padding-top:6px; border-top:1px solid #334155; display:flex; align-items:center; justify-content:space-between; gap:8px; flex-wrap:wrap;">
+              <span style="font-size:12px; color:#e2e8f0;">Głos lektora (Studio MP3 / awaryjny syntezator):</span>
+              <select id="voiceSelectTop" class="vfs-select" style="max-width:240px;" onchange="App.changeVoice(this.value)" title="Domyślnie używane są nagrania Studio MP3 ElevenLabs; tutaj można awaryjnie przełączyć na syntetycznego lektora"></select>
+            </div>
+            <!-- Zabezpieczenie dostępu do Panelu Admina -->
+            <div style="margin-top:6px; padding-top:6px; border-top:1px solid #334155; display:flex; flex-direction:column; gap:5px;">
+              <span style="font-size:11px; font-weight:800; color:#facc15; text-transform:uppercase;">Zabezpieczenie Panelu Admina przed użytkownikami:</span>
+              <label class="admin-chk" style="margin-bottom:0;">
+                <input type="checkbox" id="chkRequireAdminPass" onchange="App.updateAdminPolicy()" />
+                <span>Wymagaj hasła Instruktora przy otwieraniu Panelu Admina</span>
+              </label>
+              <label class="admin-chk" style="margin-bottom:0;">
+                <input type="checkbox" id="chkHideAdminBtn" onchange="App.updateAdminPolicy()" />
+                <span>Ukryj przycisk „Admin” na górnym pasku (otwierany tylko skrótem <code>Ctrl+Shift+A</code>)</span>
+              </label>
+              <div style="display:flex; gap:6px; align-items:center; margin-top:2px;">
+                <input type="password" id="newAdminPassInput" class="search-in" style="padding:4px 8px; font-size:11.5px;" placeholder="Nowe hasło Instruktora (domyślne: git2026)..." />
+                <button class="btn-top btn-xs" onclick="App.changeAdminPassword()">Zmień hasło</button>
+              </div>
+            </div>
+            <div style="margin-top:6px; padding-top:6px; border-top:1px solid #334155; font-size:11.5px; color:#cbd5e1;" id="adminStatsSummary"></div>
+          </div>
+        </div>
+
+        <!-- Sekcja 3: Zgłoszenia Testowe i Korespondencja od Użytkowników (Feedback) -->
+        <div class="admin-box">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; gap:8px; flex-wrap:wrap;">
+            <h4 style="margin-bottom:0; display:flex; align-items:center; gap:8px;">
+              <span>3. Zgłoszenia Testowe i Korespondencja od Użytkowników (Feedback)</span>
+              <span id="adminFeedbackSummaryBadge" class="feedback-status-pill pill-none">0 zgłoszeń</span>
+            </h4>
+            <div style="display:flex; gap:6px; align-items:center;">
+              <select id="adminFeedbackFilter" class="vfs-select" onchange="App.renderAdminFeedbackList()">
+                <option value="all">Wszystkie zgłoszenia</option>
+                <option value="submitted">🟠 Tylko nowe (nieodczytane)</option>
+                <option value="read_by_admin">🔵 Odczytane (bez odpowiedzi)</option>
+                <option value="replied">🟢 Z udzieloną odpowiedzią</option>
+              </select>
+              <button class="btn-top btn-xs" onclick="App.loadAdminFeedback(true)">↻ Odśwież listę</button>
+            </div>
+          </div>
+          <div id="adminFeedbackList" style="max-height:290px; overflow-y:auto; display:flex; flex-direction:column; gap:8px; padding-right:4px;"></div>
+        </div>
+
+        <!-- Tabela przypisania kroków do poziomów -->
+        <div class="admin-box">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+            <h4>4. Matryca Kroków – Przypisanie do Wariantów (Możesz zmienić poziom dowolnego kroku)</h4>
+            <button class="btn-top btn-director" onclick="App.exportProfileConfigJS()">Pobierz zaktualizowany course-profiles.js</button>
+          </div>
+          <div class="admin-table-wrap">
+            <table class="admin-table">
+              <thead>
+                <tr>
+                  <th>ID Kroku</th>
+                  <th>Moduł i Tytuł Kroku</th>
+                  <th>Typ</th>
+                  <th>Poziom (Wariant docelowy)</th>
+                  <th>Widoczny w bieżącym profilu?</th>
+                </tr>
+              </thead>
+              <tbody id="adminStepsTableBody"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- WYSUWANA SZUFLADA MAPY KURSU -->
+  <div class="drawer-backdrop" id="drawerBackdrop" onclick="if(event.target===this)App.toggleDrawer()">
+    <aside class="drawer">
+      <div class="drawer-hdr">
+        <div class="drawer-title-row">
+          <b id="drawerHeaderTitle">Syllabus Kursu</b>
+        </div>
+        <input type="text" class="search-in" placeholder="Filtruj po komendzie lub temacie (np. restore, merge, rebase, sha-1)..." oninput="App.filterDrawer(this.value)" />
+        <div class="drawer-sub-actions">
+          <span id="drawerProfileInfo">Aktywny wariant: Zaawansowany</span>
+          <div style="display:flex; gap:4px;">
+            <button class="btn-top btn-xs" onclick="App.collapseAllModules(false)">Rozwiń</button>
+            <button class="btn-top btn-xs" onclick="App.collapseAllModules(true)">Zwiń</button>
+          </div>
+        </div>
+        <div style="font-size:11px; color:#94a3b8; background:#162032; padding:5px 8px; border-radius:5px; border:1px solid #334155;">
+          Możesz kliknąć <b>✓ Zalicz</b> przy dowolnym kroku/module, aby przeskoczyć go awansem, lub <b>↺ Resetuj</b>, aby powtórzyć pojedynczy krok bez kasowania reszty postępu.
+        </div>
+      </div>
+      <div class="drawer-body" id="drawerList"></div>
+    </aside>
+  </div>
+
+  <!-- GŁÓWNA PRZESTRZEŃ ROBOCZA -->
+  <main class="workspace" id="workspace">
+
+    <!-- LEWA KOLUMNA -->
+    <section class="pane-col" id="leftCol" style="width: 56%;">
+
+      <!-- LEWA GÓRA: DYNAMICZNA SCENA WIEDZY -->
+      <div class="card" id="leftTop" style="height: 70%;">
+        <div class="stage-header">
+          <div class="stage-title-row">
+            <div style="min-width:0; flex:1;">
+              <div class="kicker" id="stageKicker">MODUŁ</div>
+              <div class="stage-title" id="stageTitle">Tytuł kroku</div>
+            </div>
+            <span id="stepTierBadgeMain" class="tier-badge"></span>
+          </div>
+          <div class="dock-bar">
+            <div class="dock-pills" id="dockPills"></div>
+            <div style="display:flex; gap:5px; align-items:center; flex-shrink:0;">
+              <button class="btn-top btn-xs" style="background:#fff; color:#0f172a;" onclick="App.openAllCards()" title="Otwórz wszystkie karty wiedzy w tym kroku">+ Otwórz karty</button>
+              <button class="btn-top btn-xs" style="background:#e2e8f0; color:#1e293b; border-color:#94a3b8;" onclick="App.resetLayout()" title="Przywróć optymalne proporcje 4 paneli i belek podziału (Alt+R)">↺ Układ</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="stage-canvas grid-mode" id="stageCanvas"></div>
+
+        <div class="voice-bar" id="voiceBar">
+          <div class="voice-controls">
+            <button class="btn-top btn-xs" onclick="App.prevDirectorBeat()" title="Poprzedni fragment audio">
+              <svg class="ico2d" viewBox="0 0 16 16"><rect x="2.5" y="3" width="2" height="10" fill="currentColor"/><polygon points="13,3 6,8 13,13" fill="currentColor"/></svg>
+            </button>
+            <button class="btn-top btn-xs btn-pause-icon" id="btnDirectorPauseInline" onclick="App.togglePauseDirector()" style="display:none;" title="Wstrzymaj / Wznów narrację lektora">
+              <svg class="ico2d" viewBox="0 0 16 16"><rect x="3.5" y="2.8" width="3.2" height="10.4" rx="0.8" fill="currentColor"/><rect x="9.3" y="2.8" width="3.2" height="10.4" rx="0.8" fill="currentColor"/></svg>
+            </button>
+            <button class="btn-top btn-xs btn-director" id="btnDirectorInline" onclick="App.toggleDirector()" title="Odtwórz / Zatrzymaj audio">
+              <svg class="ico2d" viewBox="0 0 16 16"><polygon points="4,2.5 13.5,8 4,13.5" fill="currentColor"/></svg>
+              <span>START</span>
+            </button>
+            <button class="btn-top btn-xs" onclick="App.nextDirectorBeat()" title="Następny fragment audio">
+              <svg class="ico2d" viewBox="0 0 16 16"><polygon points="3,3 10,8 3,13" fill="currentColor"/><rect x="11.5" y="3" width="2" height="10" fill="currentColor"/></svg>
+            </button>
+          </div>
+          <!-- IKONA GŁOŚNIKA 2D (SPOCZYNKOWA LUB GRAJĄCA) -->
+          <span class="voice-badge" id="directorBadge" title="Status odtwarzania audio">
+            <svg class="ico2d speaker-svg" viewBox="0 0 18 16"><polygon points="2,5.5 5.5,5.5 9.5,2 9.5,14 5.5,10.5 2,10.5" fill="#0f172a"/><path d="M12 5.5a3.5 3.5 0 0 1 0 5" fill="none" stroke="#0f172a" stroke-width="1.6" stroke-linecap="round" opacity="0.45"/></svg>
+          </span>
+          <div class="expandable-frame voice-expandable" id="voiceSubtitleWrap" onclick="App.togglePinExpandable('voiceSubtitleWrap', event)" title="Najedź lub kliknij, aby rozwinąć pełny skrypt audio tej lekcji">
+            <div class="expandable-summary">
+              <span id="voiceSubtitle" class="voice-subtitle-short">Kliknij „START”, aby usłyszeć objaśnienie i zobaczyć wskazanie elementów na ekranie.</span>
+              <span class="expand-caret">▴</span>
+            </div>
+            <div class="expandable-dropdown drop-up" id="voiceSubtitleDropdown" onclick="event.stopPropagation()">
+              <div class="exp-hdr">
+                <svg class="ico2d" viewBox="0 0 18 16"><polygon points="2,5.5 5.5,5.5 9.5,2 9.5,14 5.5,10.5 2,10.5" fill="#38bdf8"/><path d="M12 5a4 4 0 0 1 0 6M14.2 3a7 7 0 0 1 0 10" fill="none" stroke="#facc15" stroke-width="1.6" stroke-linecap="round"/></svg>
+                <span>Pełny skrypt audio w tej lekcji (kliknij wiersz, aby odtworzyć)</span>
+              </div>
+              <div id="voiceTranscriptList" class="exp-body"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="splitter-h" id="splitLeftH" title="Przeciągnij w górę/dół • Kliknij dwukrotnie, aby zresetować układ okienek"></div>
+
+      <!-- LEWA DÓŁ: NADZOROWANE ZADANIE I KOMPAKTOWY PASEK POSTĘPU -->
+      <div class="card" id="leftBottom" style="flex: 1; border: 2px solid #f59e0b;">
+        <div class="card-hdr task-hdr">
+          <b id="taskHeaderTitle" class="task-hdr-title">ZADANIE PRAKTYCZNE</b>
+          <div class="task-hdr-actions">
+            <!-- ROZWIJANA DO GÓRY RAMKA PODPOWIEDZI (HOVER LUB KLIKNIĘCIE BY PRZYPIĄĆ) -->
+            <div class="expandable-frame" id="hintWrap" onclick="App.togglePinExpandable('hintWrap', event)" title="Najedź myszką, aby podejrzeć podpowiedź, lub kliknij, aby utrwalić okienko">
+              <button class="btn-top btn-xs" id="btnHintTask" style="background:#fff; color:#0f172a;" type="button">
+                <svg class="ico2d" viewBox="0 0 16 16"><path d="M8 1.5a4.5 4.5 0 0 0-2.6 8.2c.4.3.6.8.6 1.3v.5h4v-.5c0-.5.2-1 .6-1.3A4.5 4.5 0 0 0 8 1.5z" fill="#facc15" stroke="#b45309" stroke-width="1.2"/><rect x="6" y="12.5" width="4" height="2" rx="0.8" fill="#64748b"/></svg>
+                <span>Podpowiedź</span>
+                <span class="expand-caret" style="color:#d97706;">▴</span>
+              </button>
+              <div class="expandable-dropdown drop-up drop-right hint-dropdown" id="hintDropdown" onclick="event.stopPropagation()">
+                <div class="exp-hdr">
+                  <svg class="ico2d" viewBox="0 0 16 16"><path d="M8 1.5a4.5 4.5 0 0 0-2.6 8.2c.4.3.6.8.6 1.3v.5h4v-.5c0-.5.2-1 .6-1.3A4.5 4.5 0 0 0 8 1.5z" fill="#facc15"/></svg>
+                  <span>Wskazówka do bieżącego ćwiczenia (kliknij przycisk, aby przypiąć/odpiąć)</span>
+                </div>
+                <div id="hintDropdownBody" class="exp-body"></div>
+              </div>
+            </div>
+            <button class="btn-top btn-xs" style="background:#fff; color:#0f172a;" onclick="App.resetCurrentStep()">
+              <svg class="ico2d" viewBox="0 0 16 16"><path d="M13 8a5 5 0 1 1-1.4-3.5M13 2v3h-3" fill="none" stroke="#2563eb" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              <span>Reset</span>
+            </button>
+            <button class="btn-top btn-xs" style="background:#fff; color:#0f172a;" onclick="App.toggleTaskMinimize()" id="btnMinTask">▾ Zwiń</button>
+          </div>
+        </div>
+        <div class="task-body-pad" id="taskBodyPad">
+          <!-- ŁADNY PASEK Z PEŁNĄ TREŚCIĄ ZADANIA I GOTOWYMI KOMENDAMI DO KLIKNIĘCIA -->
+          <div id="guidedInstructionBox" class="guided-box"></div>
+          <!-- KOMPAKTOWE INDYKATORY POSTĘPU WYKONANIA NA DOLE OKIENKA -->
+          <div id="assertionsContainer" class="task-progress-footer"></div>
+          <div id="stepCompletedBanner" class="step-done-banner" style="display:none;"></div>
+        </div>
+      </div>
+
+    </section>
+
+    <div class="splitter-v" id="splitMainV" title="Przeciągnij w lewo/prawo • Kliknij dwukrotnie, aby zresetować układ okienek"></div>
+
+    <!-- PRAWA KOLUMNA -->
+    <section class="pane-col" id="rightCol" style="flex: 1;">
+
+      <!-- PRAWA GÓRA: WIZUALNY INSPEKTOR .GIT -->
+      <div class="card" id="rightTop" style="height: 46%;">
+        <div class="inspector-bar">
+          <div class="insp-tabs">
+            <button class="insp-tab active" id="inspTab-trees" onclick="App.switchInspector('trees')">
+              <svg class="ico2d" viewBox="0 0 16 16"><polygon points="8,1.5 14.5,5 8,8.5 1.5,5" fill="#38bdf8" stroke="#0284c7" stroke-width="1"/><polyline points="1.5,8.2 8,11.7 14.5,8.2" fill="none" stroke="#2563eb" stroke-width="1.6"/><polyline points="1.5,11.2 8,14.7 14.5,11.2" fill="none" stroke="#16a34a" stroke-width="1.6"/></svg>
+              <span>1. Trzy Obszary</span>
+            </button>
+            <button class="insp-tab" id="inspTab-dag" onclick="App.switchInspector('dag')">
+              <svg class="ico2d" viewBox="0 0 16 16"><line x1="4.5" y1="3.5" x2="4.5" y2="12.5" stroke="#16a34a" stroke-width="1.8"/><path d="M4.5 9.5c3.5 0 4.5-2 7-4" fill="none" stroke="#2563eb" stroke-width="1.8"/><circle cx="4.5" cy="3.5" r="2.1" fill="#22c55e"/><circle cx="4.5" cy="12.5" r="2.1" fill="#16a34a"/><circle cx="11.5" cy="5.5" r="2.1" fill="#3b82f6"/></svg>
+              <span>2. Graf DAG &amp; Gałęzie</span>
+            </button>
+            <button class="insp-tab" id="inspTab-git" onclick="App.switchInspector('git')">
+              <svg class="ico2d" viewBox="0 0 16 16"><circle cx="7" cy="7" r="4.5" fill="none" stroke="#9333ea" stroke-width="1.8"/><line x1="10.3" y1="10.3" x2="14.2" y2="14.2" stroke="#9333ea" stroke-width="2" stroke-linecap="round"/></svg>
+              <span>3. Obiekty .git/</span>
+            </button>
+          </div>
+          <!-- ROZWIJANA DO DOŁU RAMKA STATUSU GIT STATUS -S -->
+          <div class="expandable-frame status-expandable" id="stBadgeWrap" onclick="App.togglePinExpandable('stBadgeWrap', event)" title="Najedź myszką lub kliknij, aby rozwinąć pełny opis git status -s">
+            <div class="expandable-summary status-pill">
+              <span id="stBadge" class="status-short">git status -s: czysto</span>
+              <span class="expand-caret">▾</span>
+            </div>
+            <div class="expandable-dropdown drop-right" id="stBadgeDropdown" onclick="event.stopPropagation()">
+              <div class="exp-hdr">
+                <svg class="ico2d" viewBox="0 0 16 16"><rect x="2" y="8" width="3" height="6" fill="#38bdf8"/><rect x="6.5" y="4" width="3" height="10" fill="#4ade80"/><rect x="11" y="2" width="3" height="12" fill="#facc15"/></svg>
+                <span>Szczegółowy stan plików (git status --short)</span>
+              </div>
+              <div id="stBadgeFull" class="exp-body"></div>
+            </div>
+          </div>
+        </div>
+        <div class="inspector-body" id="inspectorBody"></div>
+      </div>
+
+      <div class="splitter-h" id="splitRightH" title="Przeciągnij w górę/dół • Kliknij dwukrotnie, aby zresetować układ okienek"></div>
+
+      <!-- PRAWA DÓŁ: WARSZTAT (TERMINAL GIT BASH + EDYTOR PLIKÓW VFS) -->
+      <div class="term-card" id="rightBottom" style="flex: 1;">
+        <div class="term-bar">
+          <div style="display:flex; gap:6px; align-items:center;">
+            <button class="btn-top btn-xs active-wb" id="wbBtnTerm" onclick="App.switchWorkbench('term')">
+              <svg class="ico2d" viewBox="0 0 16 16"><rect x="1" y="2" width="14" height="12" rx="1.8" fill="#0f172a" stroke="#38bdf8" stroke-width="1.4"/><polyline points="4,5.5 7,8 4,10.5" fill="none" stroke="#4ade80" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/><line x1="8" y1="10.5" x2="11.5" y2="10.5" stroke="#facc15" stroke-width="1.6" stroke-linecap="round"/></svg>
+              <span>Terminal Git Bash (MINGW64)</span>
+            </button>
+            <button class="btn-top btn-xs" id="wbBtnEdit" onclick="App.switchWorkbench('edit')">
+              <svg class="ico2d" viewBox="0 0 16 16"><path d="M3 13l2.8-.6L13.2 5 11 2.8 3.6 10.2 3 13z" fill="#facc15" stroke="#f59e0b" stroke-width="1.2" stroke-linejoin="round"/></svg>
+              <span>Edytor pliku VFS</span>
+            </button>
+            <select id="vfsFileSelect" class="vfs-select" onchange="App.loadFileIntoEditor(this.value)"></select>
+          </div>
+          <button class="btn-top btn-xs" onclick="App.clearTerminal()">Wyczyść</button>
+        </div>
+
+        <div class="term-body" id="termOut"></div>
+        <div class="term-in" id="termInputRow">
+          <span class="p-dir" id="promptDir">log-guard</span><span class="p-br" id="promptBranch">(main)</span><span class="p-merge" id="promptMerge"></span>&nbsp;$
+          <input type="text" id="cmdIn" placeholder="Wpisz komendę (np. help, ls -lh, git status -s, git diff) i naciśnij Enter..." autocomplete="off" />
+        </div>
+
+        <div class="term-body" id="editorPane" style="display:none; flex-direction:column; gap:8px;">
+          <div style="display:flex; justify-content:space-between; align-items:center; font-size:12px;">
+            <span>Edycja pliku na dysku roboczym: <b style="color:#facc15;" id="editorFileName">analyzer.py</b></span>
+            <button class="btn-top btn-xs" style="background:#16a34a; border:none; color:#fff;" onclick="App.saveEditorToVFS()">
+              <svg class="ico2d" viewBox="0 0 16 16"><polyline points="2.5,8.5 6.5,12.5 13.5,4" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              <span>Zapisz plik na dysku roboczym</span>
+            </button>
+          </div>
+          <textarea id="editorTextarea" class="vfs-textarea"></textarea>
+        </div>
+      </div>
+
+    </section>
+  </main>
+
+  <!-- MODUŁY KONFIGURACJI, DANYCH ORAZ SILNIKA -->
+  <script>window.CURRICULUM = [];</script>
+  <script src="curriculum/course-profiles.js?v=20261107c"></script>
+  <script src="curriculum/m00-intro-guide.js?v=20261107f"></script>
+  <script src="curriculum/m01-objects-sha1.js?v=20261107c"></script>
+  <script src="curriculum/m02-index-diff.js?v=20261107c"></script>
+  <script src="curriculum/m03-dag-reset.js?v=20261107c"></script>
+  <script src="curriculum/m04-branch-merge.js?v=20261107c"></script>
+  <script src="curriculum/m05-remotes-gh.js?v=20261107c"></script>
+  <script src="engine/storage-scorm.js?v=20261107c"></script>
+  <script src="engine/vfs-git.js?v=20261107c"></script>
+  <script src="engine/app.js?v=20261107g"></script>
+</body>
+</html>

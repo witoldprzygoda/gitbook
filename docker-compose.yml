@@ -1,0 +1,12 @@
+services:
+  gitbook:
+    build: .
+    container_name: gitbook-web
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8090:8090"
+    volumes:
+      - ./data:/app/data
+    environment:
+      - NODE_ENV=production
+      - PORT=8090
