@@ -631,7 +631,7 @@ const App = {
       audio.onerror = fallback;
       audio.volume = 1.0;
       audio.muted = false;
-      audio.src = `audio/${mp3Id}.mp3?v=20261107d`;
+      audio.src = `audio/${mp3Id}.mp3?v=20261108a`;
       audio.load();
       attemptPlay();
       return;
@@ -3969,7 +3969,7 @@ const App = {
         };
         audio.volume = 1.0;
         audio.muted = false;
-        audio.src = `audio/${beat.audioId}.mp3?v=20261107d`;
+        audio.src = `audio/${beat.audioId}.mp3?v=20261108a`;
         audio.load();
         attemptPlay();
       };
@@ -3990,7 +3990,7 @@ const App = {
         };
         audio.volume = 1.0;
         audio.muted = false;
-        audio.src = `audio/${activeOpener.id}.mp3?v=20261107d`;
+        audio.src = `audio/${activeOpener.id}.mp3?v=20261108a`;
         audio.load();
         attemptPlay();
       } else {

@@ -318,6 +318,7 @@ const server = http.createServer(async (req, res) => {
           "Content-Type": contentType,
           "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"
         });
+        if (req.method === "HEAD") return res.end();
         const stream = fs.createReadStream(filePath, { start, end });
         stream.on("error", () => {
           if (!res.headersSent) res.writeHead(500);
@@ -332,6 +333,7 @@ const server = http.createServer(async (req, res) => {
           "Accept-Ranges": "bytes",
           "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"
         });
+        if (req.method === "HEAD") return res.end();
         const stream = fs.createReadStream(filePath);
         stream.on("error", () => {
           if (!res.headersSent) res.writeHead(500);
