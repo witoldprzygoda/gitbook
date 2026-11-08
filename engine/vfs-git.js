@@ -111,12 +111,96 @@ const VFSGit = {
   },
 
   /**
+   * Uniwersalne rozwiązywanie referencji Gita (HEAD, HEAD~N, HEAD^N, gałęzie lokalne/zdalne, tagi, skróty SHA-1)
+   * na obiekt commita w wirtualnym repozytorium.
+   */
+  resolveCommitRef(rawRef) {
+    if (!rawRef || this.unborn) return null;
+    const clean = String(rawRef).trim().replace(/\^\{(?:commit|tree)\}$/, "");
+    if (!clean) return null;
+
+    if (clean === "HEAD" || clean === "@") return this.headCommit;
+    if (clean === "HEAD~1" || clean === "HEAD^" || clean === "HEAD^1" || clean === "@~1" || clean === "@^") {
+      const parentId = this.headCommit.parent;
+      if (parentId) {
+        const found = this.commits.find(c => c.id === parentId);
+        if (found) return found;
+      }
+      return this.commits[1] || this.headCommit;
+    }
+    const tildeMatch = clean.match(/^(?:HEAD|@)~(\d+)$/);
+    if (tildeMatch) {
+      const n = parseInt(tildeMatch[1], 10);
+      return this.commits[n] || this.commits[this.commits.length - 1] || this.headCommit;
+    }
+    if (clean === "HEAD^2" || clean === "@^2") {
+      if (!this.headCommit.parent2) return null;
+      return this.commits.find(c => c.id === this.headCommit.parent2) || {
+        id: this.headCommit.parent2,
+        msg: "Scalana gałąź (rodzic 2)",
+        files: this.headCommit.files || {}
+      };
+    }
+
+    const stripped = clean
+      .replace(/^refs\/heads\//, "")
+      .replace(/^refs\/remotes\//, "")
+      .replace(/^refs\/tags\//, "");
+
+    const brId = (this.branches && this.branches[stripped]) || (stripped === this.branch ? this.headCommit.id : null);
+    if (brId) {
+      return this.commits.find(c => c.id === brId) || (brId === this.headCommit.id ? this.headCommit : {
+        id: brId,
+        msg: this.headCommit.msg,
+        files: this.headCommit.files || {}
+      });
+    }
+    const tagId = this.tags && this.tags[stripped];
+    if (tagId) {
+      return this.commits.find(c => c.id === tagId) || this.headCommit;
+    }
+    if (/^[0-9a-f]{4,40}$/i.test(stripped) || (Array.isArray(this.commits) && this.commits.some(c => c.id.startsWith(stripped)))) {
+      const byHash = (this.commits || []).find(c => c.id.startsWith(stripped));
+      if (byHash) return byHash;
+    }
+    return null;
+  },
+
+  /**
+   * Buduje dekoracje referencji (np. "(HEAD -> pr-42, main, tag: v1.0.0)") dla wskazanego commita.
+   */
+  formatCommitDecorations(commitId, isDefaultHead = false) {
+    if (!commitId) return "";
+    const refs = [];
+    const isHeadHere = (this.headCommit && this.headCommit.id === commitId) || isDefaultHead;
+    if (isHeadHere) {
+      refs.push(this.detached ? "HEAD" : `HEAD -> ${this.branch}`);
+    }
+    for (const [bName, bId] of Object.entries(this.branches || {})) {
+      if (bId === commitId && (!isHeadHere || this.detached || bName !== this.branch)) {
+        refs.push(bName);
+      }
+    }
+    for (const [tName, tId] of Object.entries(this.tags || {})) {
+      if (tId === commitId) {
+        refs.push(`tag: ${tName}`);
+      }
+    }
+    return refs.length > 0 ? ` (${refs.join(", ")})` : "";
+  },
+
+  /**
    * Strażnik Laboratorium: Sprawdza, czy komenda jest czystą, niedestrukcyjną operacją odczytu/inspekcji.
-   * Takie komendy są zawsze dozwolone w każdym kroku.
+   * Takie komendy są zawsze dozwolone w każdym kroku (przed, w trakcie i po zakończeniu zadania).
    */
   isReadOnlyCommand(rawCmd) {
     const trimmed = String(rawCmd || "").trim();
     if (!trimmed) return false;
+
+    // Kontrola niezamkniętych cudzysłowów -> przekaż do analizatora składni
+    const dblQuotes = (trimmed.match(/"/g) || []).length;
+    const sglQuotes = (trimmed.match(/'/g) || []).length;
+    if (dblQuotes % 2 !== 0 || sglQuotes % 2 !== 0) return false;
 
     // Specjalny przypadek: potok do obliczenia skrótu SHA-1 (bez flagi zapisu -w)
     if (/^(?:printf|echo)\s+[^|>]+?\s*\|\s*git\s+hash-object\s+--stdin$/.test(trimmed)) {
@@ -141,37 +225,183 @@ const VFSGit = {
     }
 
     const c = baseCmd.replace(/\s+/g, " ").trim();
+    const tokens = c.split(" ");
+    const firstWord = tokens[0];
 
     // 1. Niedestrukcyjne polecenia powłoki
-    if (/^(?:help|git help|clear|cls|history|history -c|pwd|whoami|id|hostname|date|env|printenv)$/.test(c)) return true;
-    if (/^uname(?:\s+-a)?$/.test(c)) return true;
+    if (/^(?:help|git help|git --help|\?|clear|cls|history|history -c|history \d+|pwd|whoami|id|hostname|date|env|printenv)$/.test(c)) return true;
+    if (/^uname(?:\s+-[a-zA-Z]+)?$/.test(c)) return true;
     if (/^(?:which|type)\s+[a-zA-Z0-9._-]+$/.test(c)) return true;
-    if (/^ls(?:\s+(?:-[la1Fh]+|\.|(?:\.git(?:\/[a-zA-Z0-9._/-]*)?)|[a-zA-Z0-9._/-]+))*$/.test(c)) return true;
+    if (/^(?:ls|ll|la|dir)(?:\s+(?:-[la1FhRrtS]+|\.|(?:\.git(?:\/[a-zA-Z0-9._/-]*)?)|[a-zA-Z0-9._/-]+))*$/.test(c)) return true;
     if (/^tree(?:\s+(?:-a|-L\s*\d+|\.|(?:\.git(?:\/[a-zA-Z0-9._/-]*)?)))*$/.test(c)) return true;
     if (/^find(?:\s+(?:\.|-maxdepth\s+\d+|-name\s+["']?[^"']+["']?))*$/.test(c)) return true;
     if (/^(?:cat|less|more|head|tail|wc|nl)(?:\s+(?:-[nclw]\s*\d*|-[a-zA-Z]+|\.?[a-zA-Z0-9._/-]+))+$/.test(c)) return true;
     if (/^grep(?:\s+(?:-[inrvE]+|["'][^"']+["']|\S+)){2,}$/.test(c)) return true;
     if (/^(?:echo|printf)\s+[^|>]+$/.test(c)) return true;
+    if (/^cd(?:\s+(?:\.|~|[a-zA-Z0-9._/-]+))?$/.test(c)) return true;
+
+    if (!c.startsWith("git ")) return false;
+
+    const sub = tokens[1];
+    const args = tokens.slice(2);
+
+    // Odrzuć błędne pojedyncze myślniki przy długich opcjach (np. -oneline, -staged), aby trafiły do diagnoseCommandSyntax
+    const longOptsWithSingleDash = new Set([
+      "-oneline", "-graph", "-all", "-decorate", "-staged", "-cached", "-short", "-branch",
+      "-check", "-name-only", "-stage", "-unmerged", "-stdin", "-list", "-show-origin",
+      "-amend", "-soft", "-hard", "-mixed", "-no-ff", "-force", "-force-with-lease",
+      "-set-upstream", "-rebase", "-worktree", "-source", "-dry-run", "-verbose", "-stat"
+    ]);
+    if (args.some(a => longOptsWithSingleDash.has(a.split("=")[0]))) return false;
 
     // 2. Niedestrukcyjne polecenia inspekcyjne Gita
-    if (/^git\s+(?:--version|version|-v|shortlog(?:\s+-[sn]+)?|reflog(?:\s+(?:-n\s*\d+|-\d+))?)$/.test(c)) return true;
-    if (/^git\s+status(?:\s+(?:-[sb]+|--short|--branch))*$/.test(c)) return true;
-    if (/^git\s+log(?:\s+(?:--oneline|--graph|--all|--decorate|-n\s*\d+|-\d+|refs\/stash|HEAD|[a-zA-Z0-9._/~^-]+))*$/.test(c)) return true;
-    if (/^git\s+show(?:\s+(?:HEAD|HEAD~1:[a-zA-Z0-9._/-]+|HEAD:[a-zA-Z0-9._/-]+|origin\/main:[a-zA-Z0-9._/-]+|:[123]:[a-zA-Z0-9._/-]+|:[a-zA-Z0-9._/-]+|[a-f0-9]{4,40}))?$/.test(c)) return true;
-    if (/^git\s+diff(?:\s+(?:--staged|--cached|HEAD|--check|--name-only))*$/.test(c)) return true;
-    if (/^git\s+cat-file\s+(?:-t|-p)\s+(?:HEAD(?:\^\{tree\})?|\.git\/HEAD|[a-f0-9]{4,40})$/.test(c)) return true;
-    if (/^git\s+rev-parse\s+(?:HEAD(?:~\d+|\^\d*)?|[a-zA-Z0-9._/-]+)$/.test(c)) return true;
-    if (/^git\s+hash-object\s+(?:--stdin|[a-zA-Z0-9._/-]+)$/.test(c)) return true;
-    if (/^git\s+ls-files(?:\s+(?:-s|--stage|-u|--unmerged))?$/.test(c)) return true;
-    if (/^git\s+check-ignore(?:\s+-v)?\s+[a-zA-Z0-9._/-]+$/.test(c)) return true;
-    if (/^git\s+blame(?:\s+[a-zA-Z0-9._/-]+)?$/.test(c)) return true;
-    if (/^git\s+branch(?:\s+(?:-v|-a|-r|--all|--remotes|--list|-l))?$/.test(c)) return true;
-    if (/^git\s+remote(?:\s+(?:-v|--verbose))?$/.test(c)) return true;
-    if (/^git\s+tag(?:\s+(?:-l|--list))?$/.test(c)) return true;
-    if (/^git\s+config\s+(?:(?:--local\s+)?(?:--list|-l)(?:\s+--show-origin)?|--show-origin\s+(?:--list|-l)|(?:--get\s+)?user\.(?:name|email)|--get\s+[a-zA-Z0-9._-]+)$/.test(c)) return true;
-    if (/^git\s+stash\s+list$/.test(c)) return true;
-    if (/^git\s+merge-base\s+\S+\s+\S+$/.test(c)) return true;
-    if (/^git\s+clean\s+(?:-n|--dry-run)$/.test(c)) return true;
+    if (["--version", "version", "-v", "--help", "-h", "help"].includes(sub)) return true;
+    if (args.includes("--help") || args.includes("-h")) return true;
+
+    if (sub === "shortlog") {
+      return args.every(a => !a.startsWith("-") || /^-[sne]+$/.test(a));
+    }
+
+    if (sub === "reflog") {
+      return args.every(a => !a.startsWith("-") || /^-(?:n\d*|\d+)$/.test(a) || ["--oneline", "--all"].includes(a));
+    }
+
+    if (sub === "status") {
+      const validStatusFlags = new Set(["-s", "--short", "-b", "--branch", "-sb", "-bs", "--porcelain", "-u", "-uno", "--untracked-files", "--ignored", "-v", "--long"]);
+      return args.every(a => !a.startsWith("-") || validStatusFlags.has(a));
+    }
+
+    if (sub === "log") {
+      const validLogFlags = new Set(["--oneline", "--graph", "--all", "--decorate", "--stat", "-p", "--patch", "--abbrev-commit", "--no-merges", "--merges", "--reverse", "--first-parent", "-n", "--"]);
+      for (const a of args) {
+        if (a.startsWith("-")) {
+          if (!validLogFlags.has(a) && !/^-(?:\d+|n\d+)$/.test(a) && !/^--(?:pretty|format|author|grep|since|until)=/.test(a)) {
+            return false;
+          }
+        }
+      }
+      return true;
+    }
+
+    if (sub === "show") {
+      const validShowFlags = new Set(["--stat", "--oneline", "-s", "--no-patch", "--name-only", "--name-status", "--pretty", "--format"]);
+      const nonFlags = [];
+      for (const a of args) {
+        if (a.startsWith("-")) {
+          if (!validShowFlags.has(a) && !/^--(?:pretty|format)=/.test(a)) return false;
+        } else {
+          nonFlags.push(a);
+        }
+      }
+      if (nonFlags.length === 0) return true;
+      if (nonFlags.length > 1) return false;
+      const target = nonFlags[0];
+      if (/^:[123]?:[a-zA-Z0-9._/-]+$/.test(target)) return true;
+      if (target.includes(":")) {
+        const [refPart] = target.split(":");
+        return !refPart || Boolean(this.resolveCommitRef(refPart)) || refPart === "HEAD" || refPart === "HEAD~1" || refPart === "origin/main";
+      }
+      return target === "HEAD" || Boolean(this.resolveCommitRef(target)) || /^[0-9a-f]{4,40}$/i.test(target);
+    }
+
+    if (sub === "diff") {
+      const validDiffFlags = new Set(["--staged", "--cached", "--check", "--name-only", "--name-status", "--stat", "-w", "--ignore-all-space", "--word-diff", "--"]);
+      for (const a of args) {
+        if (a.startsWith("-")) {
+          if (!validDiffFlags.has(a)) return false;
+        } else {
+          if (a.includes("..")) {
+            const parts = a.split(/\.{2,3}/);
+            if (parts.some(p => p && !this.resolveCommitRef(p) && p !== "HEAD")) return false;
+            continue;
+          }
+          const isRef = a === "HEAD" || Boolean(this.resolveCommitRef(a));
+          const isKnownFile = Boolean(
+            (this.worktree && this.worktree[a] !== undefined) ||
+            (this.index && this.index[a] !== undefined) ||
+            (this.headCommit && this.headCommit.files && this.headCommit.files[a] !== undefined)
+          );
+          if (!isRef && !isKnownFile) return false;
+        }
+      }
+      return true;
+    }
+
+    if (sub === "cat-file") {
+      if (args.length !== 2) return false;
+      const [flag, obj] = args;
+      if (!["-t", "-p", "-s"].includes(flag)) return false;
+      if (obj === "HEAD" || obj === ".git/HEAD" || obj.endsWith("^{tree}") || obj.includes(":") || /^[0-9a-f]{4,40}$/i.test(obj)) return true;
+      return Boolean(this.resolveCommitRef(obj));
+    }
+
+    if (sub === "rev-parse") {
+      if (args.length === 0) return false;
+      const validRevFlags = new Set(["--short", "--abbrev-ref", "--verify", "--show-toplevel", "--git-dir", "--is-inside-work-tree"]);
+      const nonFlags = args.filter(a => !a.startsWith("-"));
+      const flags = args.filter(a => a.startsWith("-"));
+      if (flags.some(f => !validRevFlags.has(f))) return false;
+      return nonFlags.length <= 1;
+    }
+
+    if (sub === "hash-object") {
+      if (args.includes("-w")) return false;
+      return args.length === 1 && (args[0] === "--stdin" || !args[0].startsWith("-"));
+    }
+
+    if (sub === "ls-files") {
+      const validLsFlags = new Set(["-s", "--stage", "-u", "--unmerged", "-c", "--cached", "-o", "--others", "-m", "--modified", "-i", "--ignored"]);
+      return args.every(a => !a.startsWith("-") || validLsFlags.has(a));
+    }
+
+    if (sub === "check-ignore") {
+      const nonFlags = args.filter(a => !a.startsWith("-"));
+      const flags = args.filter(a => a.startsWith("-"));
+      return nonFlags.length === 1 && flags.every(f => f === "-v" || f === "--verbose" || f === "-q" || f === "--quiet");
+    }
+
+    if (sub === "blame") {
+      return args.every(a => !a.startsWith("-"));
+    }
+
+    if (sub === "branch") {
+      // Tylko wywołania odczytujące listę gałęzi (bez tworzenia, usuwania i zmiany nazwy)
+      const readOnlyBranchFlags = new Set(["-v", "-vv", "-a", "-r", "-va", "-av", "--all", "--remotes", "--list", "-l", "--show-current", "--merged", "--no-merged"]);
+      return args.length === 0 || args.every(a => readOnlyBranchFlags.has(a));
+    }
+
+    if (sub === "remote") {
+      if (args.length === 0) return true;
+      if (args.length === 1 && (args[0] === "-v" || args[0] === "--verbose")) return true;
+      if (args.length === 2 && (args[0] === "show" || args[0] === "get-url")) return true;
+      return false;
+    }
+
+    if (sub === "tag") {
+      return args.length === 0 || (args.length === 1 && ["-l", "--list", "-n"].includes(args[0]));
+    }
+
+    if (sub === "config") {
+      if (args.includes("--show-origin") && !args.includes("--list") && !args.includes("-l")) return false;
+      const validCfgFlags = new Set(["--list", "-l", "--show-origin", "--local", "--global", "--system", "--get"]);
+      if (args.some(a => a.startsWith("-") && !validCfgFlags.has(a))) return false;
+      if (args.includes("--list") || args.includes("-l") || args.includes("--get")) return true;
+      const nonFlags = args.filter(a => !a.startsWith("-"));
+      // 'git config user.name' (tylko klucz bez nowej wartości) to odczyt
+      return nonFlags.length === 1 && (this.config[nonFlags[0]] !== undefined || /^user\.(?:name|email)$/.test(nonFlags[0]));
+    }
+
+    if (sub === "stash") {
+      return args.length === 1 && (args[0] === "list" || args[0] === "show");
+    }
+
+    if (sub === "merge-base") {
+      return args.length === 2 && args.every(a => !a.startsWith("-"));
+    }
+
+    if (sub === "clean") {
+      return args.length === 1 && ["-n", "--dry-run", "-nd", "-dn"].includes(args[0]);
+    }
 
     return false;
   },
@@ -196,9 +426,9 @@ const VFSGit = {
 
   /**
    * Analizator składni i opcji (flags/switches):
-   * Jeśli użytkownik wpisał komendę niedestrukcyjną lub komendę z bieżącego zadania, ale z błędną opcją,
-   * literówką lub złą składnią, zwraca konstruktywny komunikat diagnostyczny zamiast ogólnej blokady.
-   * Zwraca string z komunikatem błędu składniowego lub null (gdy to poprawna składniowo inna komenda modyfikująca).
+   * Zwraca komunikat błędu WYŁĄCZNIE wtedy, gdy komenda faktycznie ma niepoprawną składnię Gita/powłoki,
+   * literówkę w nazwie polecenia lub nieistniejącą opcję.
+   * NIGDY nie zgłasza błędu składni dla poprawnych komend Gita, które jedynie różnią się parametrami od zadania!
    */
   diagnoseCommandSyntax(rawCmd, guidedCmds = []) {
     const trimmed = String(rawCmd || "").trim();
@@ -221,7 +451,7 @@ const VFSGit = {
     // 2. Literówka w samym słowie 'git' lub sklejenie 'gitstatus', 'gitlog' itp.
     if (/^g(?:ti|it[a-z]+)$/i.test(firstWord)) {
       const gluedSub = firstWord.toLowerCase().startsWith("git") ? firstWord.slice(3) : "";
-      const suggestion = gluedSub ? `git ${gluedSub}` : `git ${tokens.slice(1).join(" ")}`;
+      const suggestion = gluedSub ? `git ${gluedSub} ${tokens.slice(1).join(" ")}` : `git ${tokens.slice(1).join(" ")}`;
       return [
         `bash: ${firstWord}: nie znaleziono polecenia (błąd pisowni).`,
         `💡 Czy chodziło Ci o: ${suggestion.trim()} ?`
@@ -239,11 +469,11 @@ const VFSGit = {
     // 4. Niedestrukcyjne polecenia powłoki UNIX z błędną opcją/składnią
     if (["ls", "cat", "less", "more", "tree", "find", "grep", "head", "tail", "wc", "pwd", "whoami", "uname", "help", "clear", "history"].includes(firstWord)) {
       if (firstWord === "ls") {
-        const badFlag = tokens.slice(1).find(t => t.startsWith("-") && !/^-[la1Fh]+$/.test(t));
+        const badFlag = tokens.slice(1).find(t => t.startsWith("-") && !/^-[la1FhRrtS]+$/.test(t));
         if (badFlag) {
           return [
             `ls: nieznana opcja '${badFlag}'.`,
-            "💡 Dozwolone opcje polecenia 'ls' to: -l, -a, -la, -lh, -1, -F (np. ls -la lub ls -lh)."
+            "💡 Dozwolone opcje polecenia 'ls' to m.in.: -l, -a, -la, -lh, -1, -F (np. ls -la lub ls -lh)."
           ].join("\n");
         }
       }
@@ -263,7 +493,7 @@ const VFSGit = {
         }
       }
       if (["pwd", "whoami", "clear", "help"].includes(firstWord) && tokens.length > 1) {
-        return `💡 Błąd składni: polecenie '${firstWord}' wywołujemy samodzielnie bez dodatkowych opcji (${ tokens.slice(1).join(" ") }).`;
+        return `💡 Błąd składni: polecenie '${firstWord}' wywołujemy samodzielnie bez dodatkowych opcji (${tokens.slice(1).join(" ")}).`;
       }
     }
 
@@ -276,10 +506,10 @@ const VFSGit = {
       "stash", "branch", "switch", "checkout", "merge", "rebase", "cherry-pick",
       "remote", "fetch", "pull", "push", "tag", "config", "init", "reflog",
       "cat-file", "rev-parse", "hash-object", "ls-files", "check-ignore", "blame",
-      "clean", "shortlog", "merge-base", "rm", "mv", "help", "version", "--version", "-v"
+      "clean", "shortlog", "merge-base", "rm", "mv", "help", "version", "--version", "-v", "--help", "-h"
     ];
 
-    // 5. Wykrywanie literówek w nazwie subkomendy Gita (np. 'git sttaus', 'git comit', 'git lgo')
+    // 5. Wykrywanie literówek w nazwie subkomendy Gita (np. 'git sttaus', 'git comit', 'git lgo', 'git swtich')
     if (!knownSubs.includes(sub)) {
       if (sub.startsWith("-")) {
         return [
@@ -312,7 +542,7 @@ const VFSGit = {
       "-oneline", "-graph", "-all", "-decorate", "-staged", "-cached", "-short", "-branch",
       "-check", "-name-only", "-stage", "-unmerged", "-stdin", "-list", "-show-origin",
       "-amend", "-soft", "-hard", "-mixed", "-no-ff", "-force", "-force-with-lease",
-      "-set-upstream", "-rebase", "-worktree", "-source", "-dry-run", "-verbose"
+      "-set-upstream", "-rebase", "-worktree", "-source", "-dry-run", "-verbose", "-stat"
     ]);
     const singleDashErr = args.find(a => longOptsWithSingleDash.has(a.split("=")[0]));
     if (singleDashErr) {
@@ -322,7 +552,7 @@ const VFSGit = {
       ].join("\n");
     }
 
-    // 7. Pełna kontrola opcji (flag) dla komend niedestrukcyjnych (odczytu)
+    // 7. Kontrola rzeczywistych błędów składni / nieznanych flag dla poszczególnych komend Gita
     if (sub === "status") {
       for (const a of args) {
         if (a === "--oneline" || a === "--graph") {
@@ -339,10 +569,10 @@ const VFSGit = {
             `   Polecenie 'git status' (lub 'git status -s') od razu pokazuje stan zarówno Indeksu, jak i katalogu roboczego.`
           ].join("\n");
         }
-        if (!["-s", "--short", "-b", "--branch", "-sb", "-bs"].includes(a)) {
+        if (a.startsWith("-") && !["-s", "--short", "-b", "--branch", "-sb", "-bs", "--porcelain", "-u", "-uno", "--untracked-files", "--ignored", "-v", "--long"].includes(a)) {
           return [
-            `error: nieznana opcja lub nieprawidłowy argument '${a}' dla polecenia 'git status'.`,
-            "💡 Poprawna składnia to: git status (pełny opis), git status -s / --short (format dwukolumnowy) lub git status -sb."
+            `error: nieznana opcja '${a}' dla polecenia 'git status'.`,
+            "💡 Poprawna składnia to np.: git status (pełny opis), git status -s / --short (format dwukolumnowy) lub git status -sb."
           ].join("\n");
         }
       }
@@ -358,11 +588,11 @@ const VFSGit = {
             "💡 Błąd składni: opcja '-s' (--short) należy do polecenia 'git status -s'. Aby wyświetlić zwięzłą historię (jeden commit w jednej linii), użyj: git log --oneline."
           ].join("\n");
         }
-        if (a.startsWith("-")) {
-          if (!["--oneline", "--graph", "--all", "--decorate"].includes(a) && !/^-\d+$/.test(a) && !/^-n\d+$/.test(a)) {
+        if (a.startsWith("-") && a !== "--") {
+          if (!["--oneline", "--graph", "--all", "--decorate", "--stat", "-p", "--patch", "--abbrev-commit", "--no-merges", "--merges", "--reverse", "--first-parent"].includes(a) && !/^-\d+$/.test(a) && !/^-n\d+$/.test(a) && !/^--(?:pretty|format|author|grep|since|until)=/.test(a)) {
             return [
               `fatal: unrecognized argument: ${a}`,
-              "💡 Błąd składni polecenia 'git log': nieznana opcja. Dozwolone opcje to: --oneline, --graph, --all, --decorate, -n <liczba> (np. git log --oneline)."
+              "💡 Błąd składni polecenia 'git log': nieznana opcja. Dozwolone opcje to m.in.: --oneline, --graph, --all, --decorate, --stat, -p, -n <liczba>."
             ].join("\n");
           }
         }
@@ -377,44 +607,73 @@ const VFSGit = {
             `💡 Błąd składni (literówka w nazwie opcji): brakuje litery 'd' na końcu — poprawny zapis to: git diff ${a}d`
           ].join("\n");
         }
-        if (!["--staged", "--cached", "HEAD", "--check", "--name-only"].includes(a)) {
+        if (a.startsWith("-") && !["--staged", "--cached", "--check", "--name-only", "--name-status", "--stat", "-w", "--ignore-all-space", "--word-diff", "--"].includes(a)) {
           return [
-            `error: nieprawidłowa opcja lub argument '${a}' w poleceniu 'git diff'.`,
-            "💡 Poprawne warianty to: git diff (Dysk vs Indeks), git diff --staged / --cached (Indeks vs HEAD), git diff HEAD oraz git diff --staged --check."
+            `error: nieznana opcja '${a}' w poleceniu 'git diff'.`,
+            "💡 Poprawne opcje to m.in.: git diff, git diff --staged (--cached), git diff HEAD, git diff --stat, git diff --name-only, git diff --check."
           ].join("\n");
+        }
+        if (!a.startsWith("-") && !a.includes("..")) {
+          const isRef = a === "HEAD" || Boolean(this.resolveCommitRef(a));
+          const isKnownFile = Boolean(
+            (this.worktree && this.worktree[a] !== undefined) ||
+            (this.index && this.index[a] !== undefined) ||
+            (this.headCommit && this.headCommit.files && this.headCommit.files[a] !== undefined)
+          );
+          if (!isRef && !isKnownFile) {
+            return [
+              `fatal: ambiguous argument '${a}': unknown revision or path not in the working tree.`,
+              `💡 Podana nazwa '${a}' nie pasuje do żadnej gałęzi, commita ani pliku w bieżącym repozytorium.`
+            ].join("\n");
+          }
         }
       }
     }
 
     if (sub === "show") {
-      if (args.length > 1) {
+      const validShowFlags = new Set(["--stat", "--oneline", "-s", "--no-patch", "--name-only", "--name-status", "--pretty", "--format"]);
+      const nonFlags = [];
+      for (const a of args) {
+        if (a.startsWith("-")) {
+          if (!validShowFlags.has(a) && !/^--(?:pretty|format)=/.test(a)) {
+            return [
+              `error: unknown option '${a}' w poleceniu 'git show'.`,
+              "💡 Poprawna składnia: git show [<rewizja>], git show --stat, git show HEAD:<plik> lub git show :<plik>."
+            ].join("\n");
+          }
+        } else {
+          nonFlags.push(a);
+        }
+      }
+      if (nonFlags.length > 1) {
         return [
           `error: zbyt wiele argumentów w poleceniu 'git show'.`,
-          "💡 Poprawna składnia: git show, git show HEAD:<plik>, git show :<plik> lub git show :2:<plik>."
+          "💡 Poprawna składnia: git show [<gałąź/commit>], git show HEAD:<plik>, git show :<plik> lub git show :2:<plik>."
         ].join("\n");
       }
-      if (args.length === 1) {
-        const a = args[0];
-        if (a.startsWith("-")) {
-          return [
-            `error: unknown option '${a}' w poleceniu 'git show'.`,
-            "💡 Poprawna składnia: git show, git show HEAD:<plik> (wersja z HEAD) lub git show :<plik> (wersja z Indeksu)."
-          ].join("\n");
-        }
-        if (!a.includes(":") && a !== "HEAD" && !this.commits.some(cm => cm.id.startsWith(a))) {
+      if (nonFlags.length === 1) {
+        const a = nonFlags[0];
+        if (!a.includes(":") && a !== "HEAD" && !this.resolveCommitRef(a)) {
+          const isRepoFile = (this.worktree && this.worktree[a] !== undefined) || (this.index && this.index[a] !== undefined);
+          if (isRepoFile) {
+            return [
+              `fatal: ambiguous argument '${a}': unknown revision or path not in the working tree.`,
+              `💡 Aby odczytać plik '${a}' za pomocą 'git show', poprzedź jego nazwę rewizją i dwukropkiem — np. 'git show HEAD:${a}' (wersja z commita HEAD) lub 'git show :${a}' (wersja z Indeksu). Do odczytu pliku z dysku użyj: cat ${a}.`
+            ].join("\n");
+          }
           return [
             `fatal: ambiguous argument '${a}': unknown revision or path not in the working tree.`,
-            `💡 Błąd składni: aby odczytać plik za pomocą 'git show', poprzedź jego nazwę dwukropkiem — np. 'git show HEAD:${a}' (z commita HEAD) lub 'git show :${a}' (z Indeksu). Do odczytu pliku z dysku użyj: cat ${a}.`
+            `💡 Obiekt, gałąź lub commit '${a}' nie istnieje w tym repozytorium (sprawdź dostępne gałęzie przez 'git branch -a' lub historię przez 'git log --oneline').`
           ].join("\n");
         }
       }
     }
 
     if (sub === "cat-file") {
-      if (args.length === 0 || (!args.includes("-t") && !args.includes("-p"))) {
+      if (args.length === 0 || (!args.includes("-t") && !args.includes("-p") && !args.includes("-s"))) {
         return [
-          "usage: git cat-file (-t | -p) <object>",
-          "💡 Błąd składni: polecenie 'git cat-file' wymaga podania flagi '-t' (sprawdzenie typu obiektu, np. git cat-file -t HEAD) lub '-p' (wypisanie zawartości, np. git cat-file -p HEAD)."
+          "usage: git cat-file (-t | -p | -s) <object>",
+          "💡 Błąd składni: polecenie 'git cat-file' wymaga podania flagi '-t' (typ obiektu, np. git cat-file -t HEAD) lub '-p' (zawartość obiektu, np. git cat-file -p HEAD)."
         ].join("\n");
       }
       if (args.length !== 2) {
@@ -433,20 +692,22 @@ const VFSGit = {
             "💡 Błąd składni: w poleceniu 'git ls-files' opcja wyświetlająca zawartość Indeksu ze slotami nazywa się '--stage' (bez 'd' na końcu) lub '-s': git ls-files --stage."
           ].join("\n");
         }
-        if (!["-s", "--stage", "-u", "--unmerged"].includes(a)) {
+        if (a.startsWith("-") && !["-s", "--stage", "-u", "--unmerged", "-c", "--cached", "-o", "--others", "-m", "--modified", "-i", "--ignored"].includes(a)) {
           return [
             `error: nieznana opcja '${a}' w poleceniu 'git ls-files'.`,
-            "💡 Dozwolone opcje to: git ls-files, git ls-files -s (--stage) oraz git ls-files -u (--unmerged)."
+            "💡 Dozwolone opcje to m.in.: git ls-files, git ls-files -s (--stage) oraz git ls-files -u (--unmerged)."
           ].join("\n");
         }
       }
     }
 
     if (sub === "rev-parse") {
-      if (args.length !== 1 || args[0].startsWith("-")) {
+      const validRevFlags = new Set(["--short", "--abbrev-ref", "--verify", "--show-toplevel", "--git-dir", "--is-inside-work-tree"]);
+      const badFlag = args.find(a => a.startsWith("-") && !validRevFlags.has(a));
+      if (badFlag || args.length === 0) {
         return [
           "error: nieprawidłowa składnia polecenia 'git rev-parse'.",
-          "💡 Podaj nazwę wskaźnika do rozwiązania na identyfikator SHA-1, np.: git rev-parse HEAD, git rev-parse HEAD~1 lub git rev-parse HEAD^2."
+          "💡 Podaj nazwę wskaźnika do rozwiązania na identyfikator SHA-1, np.: git rev-parse HEAD, git rev-parse HEAD~1, git rev-parse main."
         ].join("\n");
       }
     }
@@ -458,7 +719,8 @@ const VFSGit = {
           "💡 Poprawna składnia z potokiem: printf 'A\\n' | git hash-object --stdin (lub dla pliku na dysku: git hash-object plan.txt)."
         ].join("\n");
       }
-      if (args.length !== 1 || (args[0].startsWith("-") && args[0] !== "--stdin")) {
+      const badFlag = args.find(a => a.startsWith("-") && !["--stdin", "-w"].includes(a));
+      if (badFlag || args.length === 0) {
         return [
           "error: nieprawidłowa składnia polecenia 'git hash-object'.",
           "💡 Użyj: git hash-object <plik> lub printf 'A\\n' | git hash-object --stdin."
@@ -468,47 +730,105 @@ const VFSGit = {
 
     if (sub === "check-ignore") {
       const nonFlags = args.filter(a => !a.startsWith("-"));
-      const badFlag = args.find(a => a.startsWith("-") && a !== "-v" && a !== "--verbose");
-      if (badFlag || nonFlags.length !== 1) {
+      const badFlag = args.find(a => a.startsWith("-") && !["-v", "--verbose", "-q", "--quiet"].includes(a));
+      if (badFlag || nonFlags.length === 0) {
         return [
-          "error: nieprawidłowa składnia polecenia 'git check-ignore'.",
-          "💡 Podaj opcję -v oraz nazwę pliku do sprawdzenia, np.: git check-ignore -v debug.log."
+          "usage: git check-ignore [-v] <pathname>",
+          "💡 Podaj nazwę pliku do sprawdzenia (opcjonalnie z flagą -v), np.: git check-ignore -v debug.log."
         ].join("\n");
       }
     }
 
-    if (sub === "reflog" && args.length > 0) {
-      return [
-        `error: nieznana opcja '${args.join(" ")}' w poleceniu 'git reflog'.`,
-        "💡 Wywołaj polecenie bez dodatkowych opcji: git reflog."
-      ].join("\n");
+    if (sub === "reflog") {
+      const badFlag = args.find(a => a.startsWith("-") && !/^-(?:n\d*|\d+)$/.test(a) && !["--oneline", "--all"].includes(a));
+      if (badFlag) {
+        return [
+          `error: nieznana opcja '${badFlag}' w poleceniu 'git reflog'.`,
+          "💡 Wywołaj polecenie jako: git reflog (lub np. git reflog -5)."
+        ].join("\n");
+      }
     }
 
     if (sub === "branch") {
-      const badFlag = args.find(a => a.startsWith("-") && !["-v", "-a", "-r", "--all", "--remotes", "--list", "-l", "-d", "-D", "-m", "-M"].includes(a));
+      const validBrFlags = new Set(["-v", "-vv", "-a", "-r", "-va", "-av", "--all", "--remotes", "--list", "-l", "--show-current", "--merged", "--no-merged", "-d", "-D", "-m", "-M", "-c", "-C", "-f", "--force", "-u", "--set-upstream-to"]);
+      const badFlag = args.find(a => a.startsWith("-") && !validBrFlags.has(a));
       if (badFlag) {
         return [
           `error: unknown option '${badFlag}' w poleceniu 'git branch'.`,
-          "💡 Do wyświetlenia gałęzi użyj: git branch, git branch -v (z ostatnim commitem) lub git branch -a (wszystkie wraz ze zdalnymi)."
+          "💡 Do wyświetlenia gałęzi użyj: git branch, git branch -v lub git branch -a; do usunięcia: git branch -d <gałąź>."
+        ].join("\n");
+      }
+      if ((args.includes("-d") || args.includes("-D")) && args.filter(a => !a.startsWith("-")).length === 0) {
+        return [
+          "fatal: branch name required",
+          "💡 Po fladze '-d' / '-D' podaj nazwę gałęzi do usunięcia (np. git branch -d feature)."
+        ].join("\n");
+      }
+    }
+
+    if (sub === "switch") {
+      const validSwitchFlags = new Set(["-c", "-C", "--create", "--force-create", "-d", "--detach", "-f", "--force", "-m", "--merge", "-"]);
+      const badFlag = args.find(a => a.startsWith("-") && !validSwitchFlags.has(a));
+      if (badFlag) {
+        return [
+          `error: unknown option '${badFlag}' w poleceniu 'git switch'.`,
+          "💡 Poprawna składnia to: git switch <gałąź> (przełączenie na istniejącą gałąź) lub git switch -c <nowa-gałąź> (utworzenie i przełączenie)."
+        ].join("\n");
+      }
+      const targets = args.filter(a => a === "-" || !a.startsWith("-"));
+      if (targets.length === 0) {
+        return [
+          "fatal: missing branch or commit argument",
+          "💡 Błąd składni: po 'git switch' podaj nazwę gałęzi (np. git switch main lub git switch -c feature)."
+        ].join("\n");
+      }
+    }
+
+    if (sub === "checkout") {
+      const validCheckoutFlags = new Set(["-b", "-B", "-d", "--detach", "-f", "--force", "-m", "--merge", "-p", "--patch", "--", "-"]);
+      const badFlag = args.find(a => a.startsWith("-") && !validCheckoutFlags.has(a));
+      if (badFlag) {
+        return [
+          `error: unknown option '${badFlag}' w poleceniu 'git checkout'.`,
+          "💡 Poprawna składnia to: git checkout <gałąź> lub git checkout -b <nowa-gałąź>."
+        ].join("\n");
+      }
+      const targets = args.filter(a => a === "-" || !a.startsWith("-"));
+      if (targets.length === 0) {
+        return [
+          "fatal: missing branch or path argument",
+          "💡 Błąd składni: po 'git checkout' podaj nazwę gałęzi, commita lub pliku."
         ].join("\n");
       }
     }
 
     if (sub === "remote") {
-      if (args.length > 0 && args[0] !== "add" && args[0] !== "-v" && args[0] !== "--verbose") {
+      if (args.length > 0 && !["add", "remove", "rm", "rename", "set-url", "get-url", "show", "-v", "--verbose"].includes(args[0])) {
         return [
-          `error: nieznana opcja lub subkomenda '${args.join(" ")}' w poleceniu 'git remote'.`,
-          "💡 Aby wyświetlić skonfigurowane repozytoria zdalne wraz z adresami URL, wpisz: git remote -v."
+          `error: unknown subcommand or option '${args[0]}' w poleceniu 'git remote'.`,
+          "💡 Dostępne warianty: git remote -v, git remote add <nazwa> <url>, git remote show <nazwa>."
+        ].join("\n");
+      }
+      if (args[0] === "add" && args.length < 3) {
+        return [
+          "usage: git remote add <name> <url>",
+          "💡 Podaj nazwę zdalnego repozytorium oraz jego adres URL (np. git remote add upstream https://github.com/org/project.git)."
         ].join("\n");
       }
     }
 
     if (sub === "tag") {
-      const badFlag = args.find(a => a.startsWith("-") && !["-l", "--list", "-a", "-m", "-d"].includes(a));
+      const badFlag = args.find(a => a.startsWith("-") && !["-l", "--list", "-a", "-m", "-d", "-f", "--force", "-n"].includes(a));
       if (badFlag) {
         return [
           `error: unknown option '${badFlag}' w poleceniu 'git tag'.`,
-          "💡 Aby wyświetlić listę istniejących tagów, wpisz: git tag -l (lub samo git tag)."
+          "💡 Aby wyświetlić listę tagów: git tag -l; aby utworzyć tag opisany: git tag -a <nazwa> -m \"<opis>\"."
+        ].join("\n");
+      }
+      if (args.includes("-m") && !/-m\s+["'][^"']+["']/.test(c)) {
+        return [
+          "error: switch 'm' requires a value",
+          "💡 Po fladze '-m' w poleceniu 'git tag' podaj opis znacznika w cudzysłowie."
         ].join("\n");
       }
     }
@@ -520,7 +840,7 @@ const VFSGit = {
           "💡 Błąd składni: opcja '--show-origin' wymaga jednoczesnego podania flagi '--list' — wpisz: git config --list --show-origin."
         ].join("\n");
       }
-      const badFlag = args.find(a => a.startsWith("-") && !["--list", "-l", "--show-origin", "--local", "--global", "--system", "--get"].includes(a));
+      const badFlag = args.find(a => a.startsWith("-") && !["--list", "-l", "--show-origin", "--local", "--global", "--system", "--get", "--unset"].includes(a));
       if (badFlag) {
         return [
           `error: unknown option '${badFlag}' w poleceniu 'git config'.`,
@@ -530,90 +850,316 @@ const VFSGit = {
     }
 
     if (sub === "stash") {
-      const badFlag = args.find(a => a.startsWith("-"));
-      if (badFlag || (args.length > 0 && !["list", "pop", "apply", "push"].includes(args[0]))) {
+      const badFlag = args.find(a => a.startsWith("-") && !["-u", "--include-untracked", "-a", "--all", "-m", "-p"].includes(a));
+      if (badFlag || (args.length > 0 && !args[0].startsWith("-") && !["list", "pop", "apply", "push", "drop", "clear", "show", "save"].includes(args[0]))) {
         return [
           `error: nieprawidłowa składnia '${args.join(" ")}' w poleceniu 'git stash'.`,
-          "💡 W poleceniu 'git stash' słowa 'list' oraz 'pop' to subkomendy zapisywane bez myślników: git stash, git stash list, git stash pop."
+          "💡 W poleceniu 'git stash' słowa 'list', 'pop', 'apply', 'show' to subkomendy zapisywane bez myślników: git stash, git stash list, git stash pop."
         ].join("\n");
       }
     }
 
-    // 8. Konstruktywna diagnostyka składni dla komend modyfikujących z BIEŻĄCEGO ZADANIA
-    // (gdy użytkownik próbuje wpisać komendę przewidzianą w ćwiczeniu, ale popełni błąd w opcjach lub argumentach)
-    const stepHasSub = guidedCmds.some(gc => gc.trim().startsWith(`git ${sub}`));
-    const matchingStepCmd = guidedCmds.find(gc => gc.trim().startsWith(`git ${sub}`));
-
-    if (stepHasSub) {
-      if (sub === "add") {
-        if (args.length === 0) {
-          return [
-            "Nothing specified, nothing added.",
-            `💡 Błąd składni: po 'git add' musisz wskazać pliki lub opcję (w tym zadaniu: ${matchingStepCmd}).`
-          ].join("\n");
-        }
-        const badFlag = args.find(a => a.startsWith("-") && !["-A", "--all", "-u", "--update", "-f"].includes(a));
-        if (badFlag) {
-          return [
-            `error: unknown switch '${badFlag}' w poleceniu 'git add'.`,
-            `💡 Poprawna instrukcja w tym zadaniu to: ${matchingStepCmd}`
-          ].join("\n");
-        }
-        const fileArgs = args.filter(a => !a.startsWith("-") && a !== ".");
-        for (const fa of fileArgs) {
-          if (this.worktree[fa] === undefined && this.index[fa] === undefined) {
-            const avail = Object.keys(this.worktree).join(", ");
-            return [
-              `fatal: pathspec '${fa}' did not match any files`,
-              `💡 Błąd składni / nazwy pliku: plik '${fa}' nie istnieje w katalogu roboczym (dostępne pliki: ${avail}).`,
-              `   W tym zadaniu wpisz: ${matchingStepCmd}`
-            ].join("\n");
-          }
-        }
-      }
-
-      if (sub === "commit") {
-        if (!c.includes("-m")) {
-          return [
-            "error: brak wymaganej opcji '-m \"...\"' z opisem migawki.",
-            `💡 Błąd składni: w terminalu laboratoryjnym podaj komunikat commita po fladze -m w cudzysłowie, np.: ${matchingStepCmd}`
-          ].join("\n");
-        }
-        if (!/-m\s+["'][^"']+["']/.test(c)) {
-          return [
-            "error: opcja '-m' wymaga podania niepustego opisu ujętego w cudzysłów.",
-            `💡 Poprawna składnia w tym zadaniu: ${matchingStepCmd}`
-          ].join("\n");
-        }
-        if (matchingStepCmd.includes("--amend") && !c.includes("--amend")) {
-          return [
-            "💡 W tym kroku zastępujemy ostatni commit za pomocą flagi '--amend'.",
-            `   Użyj składni: ${matchingStepCmd}`
-          ].join("\n");
-        }
-      }
-
-      if (sub === "restore") {
-        const badFlag = args.find(a => a === "--stage" || a === "--work");
-        if (badFlag) {
-          return [
-            `error: unknown option '${badFlag.slice(2)}'`,
-            `💡 Błąd składni (literówka w opcji): użyj pełnej nazwy '--staged' / '--worktree' (np. ${matchingStepCmd}).`
-          ].join("\n");
-        }
+    if (sub === "add") {
+      if (args.length === 0) {
         return [
-          `error: niekompletna lub błędna składnia polecenia 'git restore'.`,
-          `💡 W tym zadaniu zastosuj dokładną postać: ${matchingStepCmd}`
+          "Nothing specified, nothing added.",
+          "💡 Błąd składni: po 'git add' wskaż plik(i) lub opcję (np. git add <plik>, git add . lub git add -A)."
         ].join("\n");
       }
+      const badFlag = args.find(a => a.startsWith("-") && !["-A", "--all", "-u", "--update", "-f", "--force", "-p", "--patch", "-n", "--dry-run", "-v", "--verbose", "--"].includes(a));
+      if (badFlag) {
+        return [
+          `error: unknown switch '${badFlag}' w poleceniu 'git add'.`,
+          "💡 Dozwolone opcje to m.in.: -A (--all), -u (--update), -f (--force) lub nazwa pliku / kropka '.'."
+        ].join("\n");
+      }
+      const fileArgs = args.filter(a => !a.startsWith("-") && a !== "." && a !== "*");
+      for (const fa of fileArgs) {
+        if (this.worktree[fa] === undefined && this.index[fa] === undefined) {
+          const avail = Object.keys(this.worktree).join(", ");
+          return [
+            `fatal: pathspec '${fa}' did not match any files`,
+            `💡 Plik '${fa}' nie istnieje w katalogu roboczym (dostępne pliki: ${avail || "brak"}).`
+          ].join("\n");
+        }
+      }
+    }
 
+    if (sub === "commit") {
+      const validCommitFlags = new Set(["-m", "-a", "-am", "-ma", "--all", "--amend", "--no-edit", "--allow-empty", "-v", "--verbose", "-q", "--quiet", "-s", "--signoff"]);
+      const badFlag = args.find(a => a.startsWith("-") && !validCommitFlags.has(a));
+      if (badFlag) {
+        return [
+          `error: unknown option '${badFlag}' w poleceniu 'git commit'.`,
+          "💡 Poprawna składnia to np.: git commit -m \"Opis zmian\" lub git commit --amend -m \"Nowy opis\"."
+        ].join("\n");
+      }
+      if (args.includes("-m") || args.includes("-am") || args.includes("-ma")) {
+        if (!/-(?:m|am|ma)\s+["'][^"']+["']/.test(c)) {
+          return [
+            "error: switch 'm' requires a value",
+            "💡 Po fladze '-m' podaj niepusty opis commita ujęty w cudzysłów, np.: git commit -m \"Opis migawki\"."
+          ].join("\n");
+        }
+      } else if (!args.includes("--no-edit")) {
+        return [
+          "💡 Składnia 'git commit' jest poprawna, ale w terminalu przeglądarkowym nie uruchamiamy zewnętrznego edytora tekstu (Vim/Nano).",
+          "   Podaj opis commita bezpośrednio po fladze -m w cudzysłowie (np. git commit -m \"Opis zmian\") lub użyj --no-edit przy --amend."
+        ].join("\n");
+      }
+    }
+
+    if (sub === "restore") {
+      const badTypo = args.find(a => a === "--stage" || a === "--work");
+      if (badTypo) {
+        return [
+          `error: unknown option '${badTypo.slice(2)}'`,
+          "💡 Błąd składni (literówka w opcji): użyj pełnej nazwy '--staged' lub '--worktree'."
+        ].join("\n");
+      }
+      const badFlag = args.find(a => a.startsWith("-") && !["-S", "--staged", "-W", "--worktree", "-SW", "-WS", "-s", "--source", "-p", "--patch", "-m", "--merge", "--ours", "--theirs"].includes(a) && !a.startsWith("--source="));
+      if (badFlag) {
+        return [
+          `error: unknown option '${badFlag}' w poleceniu 'git restore'.`,
+          "💡 Poprawne opcje to: --staged (-S), --worktree (-W), --source=HEAD (-s HEAD)."
+        ].join("\n");
+      }
+      const nonFlags = args.filter((a, idx) => !a.startsWith("-") && args[idx - 1] !== "-s" && args[idx - 1] !== "--source");
+      if (nonFlags.length === 0) {
+        return [
+          "fatal: you must specify path(s) to restore",
+          "💡 Błąd składni: wskaż nazwę pliku na końcu polecenia 'git restore' (np. git restore plan.txt lub git restore --staged analyzer.py)."
+        ].join("\n");
+      }
+    }
+
+    if (sub === "reset") {
+      const badFlag = args.find(a => a.startsWith("-") && !["--soft", "--mixed", "--hard", "--merge", "--keep", "-p", "--patch", "-q", "--"].includes(a));
+      if (badFlag) {
+        return [
+          `error: unknown option '${badFlag}' w poleceniu 'git reset'.`,
+          "💡 Poprawne tryby resetu to: --soft, --mixed (domyślny) oraz --hard."
+        ].join("\n");
+      }
+    }
+
+    if (sub === "merge") {
+      const badFlag = args.find(a => a.startsWith("-") && !["--no-ff", "--ff", "--ff-only", "--squash", "--abort", "--continue", "--no-edit", "-m", "--stat"].includes(a));
+      if (badFlag) {
+        return [
+          `error: unknown option '${badFlag}' w poleceniu 'git merge'.`,
+          "💡 Poprawna składnia to np.: git merge <gałąź> lub git merge --no-ff <gałąź>."
+        ].join("\n");
+      }
+      if (args.filter(a => !a.startsWith("-")).length === 0 && !args.includes("--abort") && !args.includes("--continue")) {
+        return [
+          "fatal: No commit specified and merge.defaultToUpstream not set.",
+          "💡 Podaj nazwę gałęzi do scalenia (np. git merge feature lub git merge origin/main)."
+        ].join("\n");
+      }
+    }
+
+    if (sub === "rebase") {
+      const badFlag = args.find(a => a.startsWith("-") && !["-i", "--interactive", "--onto", "--abort", "--continue", "--skip", "--autostash", "--rebase-merges"].includes(a));
+      if (badFlag) {
+        return [
+          `error: unknown option '${badFlag}' w poleceniu 'git rebase'.`,
+          "💡 Poprawna składnia to np.: git rebase <gałąź> (np. git rebase main)."
+        ].join("\n");
+      }
+      if (args.filter(a => !a.startsWith("-")).length === 0 && !args.includes("--abort") && !args.includes("--continue") && !args.includes("--skip")) {
+        return [
+          "fatal: brak wskazanej gałęzi bazowej dla 'git rebase'.",
+          "💡 Podaj nazwę gałęzi docelowej (np. git rebase main)."
+        ].join("\n");
+      }
+    }
+
+    if ((sub === "cherry-pick" || sub === "revert") && args.filter(a => !a.startsWith("-")).length === 0) {
       return [
-        `error: nieprawidłowa składnia lub opcja w poleceniu 'git ${sub}'.`,
-        `💡 Sprawdź zapis opcji — prawidłowa instrukcja w tym zadaniu to: ${matchingStepCmd}`
+        `usage: git ${sub} <commit>`,
+        `💡 Podaj identyfikator lub referencję commita (np. git ${sub} HEAD lub git ${sub} <hash>).`
+      ].join("\n");
+    }
+
+    if (sub === "rm" && args.filter(a => !a.startsWith("-")).length === 0) {
+      return [
+        "usage: git rm [--cached] <file>",
+        "💡 Podaj nazwę pliku do usunięcia ze śledzenia (np. git rm --cached .env)."
+      ].join("\n");
+    }
+
+    if (sub === "mv" && args.filter(a => !a.startsWith("-")).length < 2) {
+      return [
+        "usage: git mv <source> <destination>",
+        "💡 Podaj obecną oraz nową nazwę pliku (np. git mv app.py main.py)."
       ].join("\n");
     }
 
     return null;
+  },
+
+  /**
+   * Wyjaśnia użytkownikowi działanie poprawnej składniowo komendy modyfikującej (np. 'git switch main'),
+   * która wykracza poza scenariusz bieżącego kroku lub została wpisana po ukończeniu ćwiczenia.
+   * Zwraca czytelne, merytoryczne wyjaśnienie (bez fałszywego błędu składni!) lub null, gdy komenda jest nierozpoznana.
+   */
+  explainOutOfScopeValidCommand(rawCmd, guidedCmds = [], firstUnpassedIdx = 0) {
+    const trimmed = String(rawCmd || "").trim();
+    if (!trimmed) return null;
+    const c = trimmed.replace(/\s+/g, " ");
+    const tokens = c.split(" ");
+    const firstWord = tokens[0];
+
+    const knownShellMod = ["touch", "mkdir", "rm", "cp", "mv", "echo", "printf"];
+    const knownGitSubs = [
+      "status", "log", "diff", "show", "add", "commit", "restore", "reset", "revert",
+      "stash", "branch", "switch", "checkout", "merge", "rebase", "cherry-pick",
+      "remote", "fetch", "pull", "push", "tag", "config", "init", "reflog",
+      "cat-file", "rev-parse", "hash-object", "ls-files", "check-ignore", "blame",
+      "clean", "shortlog", "merge-base", "rm", "mv"
+    ];
+
+    const isGit = c.startsWith("git ") && knownGitSubs.includes(tokens[1]);
+    const isShell = knownShellMod.includes(firstWord);
+    if (!isGit && !isShell) return null;
+
+    const sub = isGit ? tokens[1] : firstWord;
+    const args = isGit ? tokens.slice(2) : tokens.slice(1);
+    const allStagesDone = (firstUnpassedIdx === -1 && guidedCmds.length > 0);
+    const nextCmd = (!allStagesDone && firstUnpassedIdx >= 0 && guidedCmds[firstUnpassedIdx])
+      ? guidedCmds[firstUnpassedIdx]
+      : (guidedCmds[0] || "");
+    const stageNum = firstUnpassedIdx >= 0 ? (firstUnpassedIdx + 1) : 1;
+
+    // 1. Gdy wszystkie etapy zadania w tym kroku zostały JUŻ WYKONANE
+    if (allStagesDone) {
+      if (sub === "switch" || sub === "checkout") {
+        const isCreate = args.includes("-c") || args.includes("-C") || args.includes("-b") || args.includes("-B");
+        const target = args.filter(a => a === "-" || !a.startsWith("-")).pop() || "main";
+        if (!isCreate && target === this.branch) {
+          return [
+            `Already on '${this.branch}'`,
+            `ℹ️ Polecenie '${c}' jest w pełni poprawne — znajdujesz się już na gałęzi '${this.branch}', a zadanie w tym kroku zostało zaliczone.`
+          ].join("\n");
+        }
+        const inspectBranch = (target === "-" || isCreate) ? "main" : target;
+        const existsNote = (!isCreate && target !== "-" && !this.branches[target])
+          ? ` (uwaga: gałąź '${target}' nie istnieje obecnie w tym repozytorium)`
+          : "";
+        return [
+          `ℹ️ Polecenie '${c}' ma w pełni poprawną składnię Gita${existsNote} — w normalnym repozytorium przełączyłoby aktywny wskaźnik HEAD${isCreate ? ` na nową gałąź '${target}'` : ` na '${target === "-" ? "poprzednią gałąź" : target}'`}.`,
+          `🔒 Zadanie praktyczne w tym kroku zostało już zaliczone, dlatego symulator utrzymuje docelowy stan ćwiczenia (gałąź '${this.branch}'), aby zachować zaliczenie kroku i spójny widok w Inspektorze.`,
+          `💡 Możesz bez przełączania HEAD badać dowolną gałąź komendami odczytu (np. git show ${inspectBranch}, git log ${inspectBranch} --oneline, git branch -v), przejść do następnego kroku lub kliknąć ↻ Reset.`
+        ].join("\n");
+      }
+
+      return [
+        `ℹ️ Polecenie '${c}' ma w pełni poprawną składnię${isGit ? " Gita" : ""}.`,
+        `🔒 Zadanie praktyczne w tym kroku zostało już w całości zaliczone — wirtualne repozytorium utrzymuje docelowy stan ćwiczenia do podglądu w Inspektorze.`,
+        `💡 Możesz swobodnie używać wszystkich komend odczytu i inspekcji (np. git status, git log --oneline, git show, git diff, git branch -v, ls, cat), przejść do następnego kroku lub kliknąć ↻ Reset, aby powtórzyć ćwiczenie.`
+      ].join("\n");
+    }
+
+    // 2. Gdy ćwiczenie jest W TRAKCIE WYKONYWANIA (firstUnpassedIdx >= 0)
+    if (sub === "switch" || sub === "checkout") {
+      const isCreate = args.includes("-c") || args.includes("-C") || args.includes("-b") || args.includes("-B");
+      const target = args.filter(a => a === "-" || !a.startsWith("-")).pop() || "";
+      if (!isCreate && target === this.branch) {
+        return [
+          `Already on '${this.branch}'`,
+          `ℹ️ Polecenie '${c}' ma poprawną składnię Gita (znajdujesz się już na gałęzi '${this.branch}').`,
+          `💡 Aby zrealizować bieżący etap zadania (Etap ${stageNum}), wykonaj:`,
+          `▶ ${stageNum}. ${nextCmd}`
+        ].join("\n");
+      }
+      if (isCreate && this.branches[target]) {
+        return [
+          `fatal: a branch named '${target}' already exists`,
+          `💡 Gałąź '${target}' już istnieje — aby się na nią przełączyć bez tworzenia nowej, pomiń flagę '-c' / '-b':`,
+          `▶ ${stageNum}. ${nextCmd}`
+        ].join("\n");
+      }
+      if (!isCreate && target !== "-" && !this.branches[target] && nextCmd.includes("-c")) {
+        return [
+          `fatal: invalid reference: ${target}`,
+          `💡 Gałąź '${target}' jeszcze nie istnieje — w tym zadaniu tworzymy ją i przełączamy się na nią za pomocą flagi '-c':`,
+          `▶ ${stageNum}. ${nextCmd}`
+        ].join("\n");
+      }
+      return [
+        `ℹ️ Polecenie '${c}' ma w pełni poprawną składnię Gita, jednak w tym kroku ćwiczenia (Etap ${stageNum}) scenariusz oczekuje:`,
+        `▶ ${stageNum}. ${nextCmd}`
+      ].join("\n");
+    }
+
+    if (sub === "merge" && nextCmd.includes("--no-ff") && !c.includes("--no-ff")) {
+      return [
+        `ℹ️ Polecenie '${c}' ma poprawną składnię Gita (wykonałoby przesunięcie Fast-Forward), jednak w tym ćwiczeniu celowo wymuszamy utworzenie obiektu Merge Commit za pomocą flagi '--no-ff':`,
+        `▶ ${stageNum}. ${nextCmd}`
+      ].join("\n");
+    }
+
+    if (sub === "reset" && nextCmd.startsWith("git reset")) {
+      return [
+        `ℹ️ Polecenie '${c}' ma poprawną składnię Gita, ale używa innego trybu lub celu niż wymagany w tym etapie ćwiczenia (Etap ${stageNum}):`,
+        `▶ ${stageNum}. ${nextCmd}`
+      ].join("\n");
+    }
+
+    if (sub === "restore" && nextCmd.startsWith("git restore")) {
+      return [
+        `ℹ️ Polecenie '${c}' ma poprawną składnię Gita, jednak w tym etapie ćwiczenia odtwarzamy plik z innymi parametrami docelowymi (Etap ${stageNum}):`,
+        `▶ ${stageNum}. ${nextCmd}`
+      ].join("\n");
+    }
+
+    if (sub === "tag" && nextCmd.includes("-a") && !c.includes("-a")) {
+      return [
+        `ℹ️ Polecenie '${c}' ma poprawną składnię Gita (tworzy lekki znacznik — lightweight tag), ale w tym zadaniu tworzymy pełny znacznik opisany (annotated tag) z flagami '-a' oraz '-m':`,
+        `▶ ${stageNum}. ${nextCmd}`
+      ].join("\n");
+    }
+
+    if (sub === "push" && nextCmd.startsWith("git push")) {
+      if (nextCmd.includes("--force-with-lease") && (c.includes("--force") || /(?:^|\s)-f(?:\s|$)/.test(c)) && !c.includes("--force-with-lease")) {
+        return [
+          `ℹ️ Polecenie '${c}' ma poprawną składnię Gita, ale bezwarunkowy '--force' może nadpisać cudzą pracę — w tym ćwiczeniu stosujemy bezpieczną flagę '--force-with-lease':`,
+          `▶ ${stageNum}. ${nextCmd}`
+        ].join("\n");
+      }
+      return [
+        `ℹ️ Polecenie '${c}' ma poprawną składnię Gita, jednak w tym kroku ćwiczenia wymagane jest użycie pełnej instrukcji (Etap ${stageNum}):`,
+        `▶ ${stageNum}. ${nextCmd}`
+      ].join("\n");
+    }
+
+    if (sub === "pull" && nextCmd.includes("--rebase") && !c.includes("--rebase")) {
+      return [
+        `ℹ️ Polecenie '${c}' ma poprawną składnię Gita (domyślnie wykonuje merge), jednak w tym ćwiczeniu pobieramy zmiany z zachowaniem liniowej historii za pomocą flagi '--rebase':`,
+        `▶ ${stageNum}. ${nextCmd}`
+      ].join("\n");
+    }
+
+    if (sub === "fetch" && nextCmd.startsWith("git fetch")) {
+      return [
+        `ℹ️ Polecenie '${c}' ma poprawną składnię Gita, jednak w tym kroku ćwiczenia pobieramy konkretną referencję zgodnie z zadaniem (Etap ${stageNum}):`,
+        `▶ ${stageNum}. ${nextCmd}`
+      ].join("\n");
+    }
+
+    if (sub === "commit" && nextCmd.includes("--amend") && !c.includes("--amend")) {
+      return [
+        `ℹ️ Polecenie '${c}' ma poprawną składnię Gita (utworzyłoby nowy, osobny commit), ale w tym kroku zastępujemy ostatni commit za pomocą flagi '--amend':`,
+        `▶ ${stageNum}. ${nextCmd}`
+      ].join("\n");
+    }
+
+    return [
+      `ℹ️ Polecenie '${c}' ma w pełni poprawną składnię${isGit ? " Gita" : ""}, ale modyfikuje stan repozytorium poza scenariuszem bieżącego zadania.`,
+      `💡 Możesz w każdej chwili używać dowolnych poleceń odczytu (np. git status, git log, git show, git diff, git branch -v, ls, cat), natomiast aby zaliczyć bieżący etap ćwiczenia (Etap ${stageNum}), wykonaj:`,
+      `▶ ${stageNum}. ${nextCmd}`
+    ].join("\n");
   },
 
   /**
@@ -628,10 +1174,11 @@ const VFSGit = {
     if (u === e || u.replace(/'/g, '"') === e.replace(/'/g, '"')) return true;
 
     // 1. git init -b main
-    if (e === "git init -b main" && (u === "git init" || u === "git init -b main")) return true;
+    if (e === "git init -b main" && (u === "git init" || u === "git init -b main" || u === "git init --initial-branch=main" || u === "git init --initial-branch main")) return true;
 
-    // 2. git config user.name "..."
+    // 2. git config user.name "..." / --list --show-origin
     if (e.startsWith("git config user.name ") && /^git config (?:--local )?user\.name (?:["'][^"']+["']|\S+)$/.test(u)) return true;
+    if (e === "git config --list --show-origin" && /^git config (?:--local )?(?:(?:--list|-l) --show-origin|--show-origin (?:--list|-l))$/.test(u)) return true;
 
     // 3. git add ...
     if (e === "git add -u" && (u === "git add -u" || u === "git add --update")) return true;
@@ -640,36 +1187,38 @@ const VFSGit = {
       const m = u.match(/^git add (.+)$/);
       if (m) {
         const args = m[1].split(" ");
-        const allowed = new Set(["plan.txt", "README.md", ".", "-A"]);
+        const allowed = new Set(["plan.txt", "README.md", ".", "-A", "--all"]);
         if (args.length >= 1 && args.every(a => allowed.has(a))) return true;
       }
     }
     if (/^git add [a-zA-Z0-9._-]+$/.test(e)) {
       const targetFile = e.split(" ")[2];
-      if (u === `git add ${targetFile}` || u === "git add ." || u === "git add -A") return true;
+      if (u === `git add ${targetFile}` || u === "git add ." || u === "git add -A" || u === "git add --all") return true;
     }
 
     // 4. git commit ...
     if (e.startsWith("git commit --amend")) {
-      if (/^git commit (?:--amend -m ["'][^"']+["']|-m ["'][^"']+["'] --amend)$/.test(u)) return true;
+      if (/^git commit (?:--amend -m ["'][^"']+["']|-m ["'][^"']+["'] --amend|--amend --no-edit|--no-edit --amend|--amend)$/.test(u)) return true;
     } else if (e.startsWith("git commit -m ")) {
-      if (/^git commit -m ["'][^"']+["']$/.test(u)) return true;
+      if (/^git commit (?:-[am]+\s+|-[a]\s+-m\s+|-m\s+)["'][^"']+["']$/.test(u)) return true;
     }
 
-    // 5. git restore ...
-    if (e === "git restore --staged analyzer.py" && (u === "git restore --staged analyzer.py" || u === "git restore -S analyzer.py")) return true;
+    // 5. git restore / rm ...
+    if (e === "git restore --staged analyzer.py" && (u === "git restore --staged analyzer.py" || u === "git restore -S analyzer.py" || u === "git restore analyzer.py --staged" || u === "git restore analyzer.py -S")) return true;
     if (e === "git restore --source=HEAD --staged --worktree plan.txt") {
-      if (/^git restore (?=.*(?:--source=HEAD|-s HEAD))(?=.*(?:--staged|-S|-SW))(?=.*(?:--worktree|-W|-SW)).*\bplan\.txt$/.test(u)) return true;
+      if (/^git restore (?=.*(?:--source=HEAD|-s HEAD|--source HEAD))(?=.*(?:--staged|-S|-SW|-WS))(?=.*(?:--worktree|-W|-SW|-WS)).*\bplan\.txt\b/.test(u)) return true;
     }
+    if (e === "git rm --cached .env" && (u === "git rm --cached .env" || u === "git rm .env --cached")) return true;
 
-    // 6. git stash / pop / reset / switch / merge / branch / tag / fetch / pull / push
-    if (e === "git stash" && (u === "git stash" || u === "git stash push")) return true;
+    // 6. git stash / pop / reset / revert / switch / merge / branch / tag / fetch / pull / push
+    if (e === "git stash" && (u === "git stash" || u === "git stash push" || u.startsWith("git stash push "))) return true;
     if (e === "git stash pop" && (u === "git stash pop" || u === "git stash apply")) return true;
-    if (e === "git reset --soft HEAD~1" && (u === "git reset --soft HEAD~1" || u === "git reset --soft HEAD^")) return true;
-    if (e === "git reset --hard c303c00" && (u === "git reset --hard c303c00" || u === "git reset --hard HEAD@{1}")) return true;
+    if (e === "git revert HEAD" && (u === "git revert HEAD" || u === "git revert HEAD --no-edit" || u === "git revert --no-edit HEAD")) return true;
+    if (e === "git reset --soft HEAD~1" && (u === "git reset --soft HEAD~1" || u === "git reset --soft HEAD^" || u === "git reset HEAD~1 --soft" || u === "git reset HEAD^ --soft")) return true;
+    if (e === "git reset --hard c303c00" && (u === "git reset --hard c303c00" || u === "git reset --hard HEAD@{1}" || u === "git reset c303c00 --hard")) return true;
     if (/^git switch -c (\S+)$/.test(e)) {
       const br = e.split(" ")[3];
-      if (u === `git switch -c ${br}` || u === `git checkout -b ${br}`) return true;
+      if (u === `git switch -c ${br}` || u === `git switch --create ${br}` || u === `git checkout -b ${br}`) return true;
     }
     if (/^git switch (\S+)$/.test(e)) {
       const br = e.split(" ")[2];
@@ -679,8 +1228,8 @@ const VFSGit = {
     if (e === "git branch -d feature" && (u === "git branch -d feature" || u === "git branch -D feature")) return true;
     if (e === 'echo "PORT = 8080" > app.py' && /^(?:echo|printf) ["']?PORT\s*=\s*8080(?:\\n)?["']? > app\.py$/.test(u)) return true;
     if (e === "git fetch origin" && (u === "git fetch origin" || u === "git fetch")) return true;
-    if (e === "git push -u origin feature-api" && (u === "git push -u origin feature-api" || u === "git push --set-upstream origin feature-api")) return true;
-    if (e.startsWith("git tag -a v1.0.0") && /^git tag -a v1\.0\.0 -m ["'][^"']+["']$/.test(u)) return true;
+    if (e === "git push -u origin feature-api" && (u === "git push -u origin feature-api" || u === "git push --set-upstream origin feature-api" || u === "git push origin feature-api -u")) return true;
+    if (e.startsWith("git tag -a v1.0.0") && /^git tag (?:-a v1\.0\.0 -m ["'][^"']+["']|-m ["'][^"']+["'] -a v1\.0\.0|-a -m ["'][^"']+["'] v1\.0\.0)$/.test(u)) return true;
     if (e === "git pull --rebase origin main" && (u === "git pull --rebase origin main" || u === "git pull --rebase")) return true;
     if (e === "git push origin main" && (u === "git push origin main" || u === "git push")) return true;
     if (e === "git push --force-with-lease origin feature-api" && (u === "git push --force-with-lease origin feature-api" || u === "git push origin feature-api --force-with-lease")) return true;
@@ -1291,7 +1840,7 @@ const VFSGit = {
 
     // 1. Inicjalizacja i konfiguracja
     if (cmd.startsWith("git init")) {
-      const m = cmd.match(/-b\s+(\S+)/);
+      const m = cmd.match(/(?:-b\s+|--initial-branch(?:=|\s+))(\S+)/);
       if (m) this.branch = m[1];
       this.initialized = true;
       this.unborn = true;
@@ -1354,25 +1903,44 @@ const VFSGit = {
       const parts = cmd.split(/\s+/);
       const target = parts[parts.length - 1];
       if (cmd.includes("-t")) {
-        if (target === "HEAD" || this.commits.some(c => c.id.startsWith(target))) return { out: "commit" };
         if (target.includes("^{tree}") || target.startsWith("tree")) return { out: "tree" };
+        if (target.includes(":")) return { out: "blob" };
+        if (target === "HEAD" || this.resolveCommitRef(target)) return { out: "commit" };
         return { out: "blob" };
+      }
+      if (cmd.includes("-s")) {
+        if (target.includes(":")) {
+          const [refPart, fPart] = target.split(":");
+          const cObj = refPart ? this.resolveCommitRef(refPart) : null;
+          const content = cObj ? (cObj.files?.[fPart] || "") : (this.index[fPart] || "");
+          return { out: String(this.byteLen(content)) };
+        }
+        return { out: "194" };
       }
       if (cmd.includes("-p")) {
         if (target === "HEAD/.git/HEAD" || target === ".git/HEAD") {
           return { out: this.detached ? this.headCommit.id : `ref: refs/heads/${this.branch}` };
         }
         if (target.includes("^{tree}")) {
+          const baseRef = target.replace(/\^\{tree\}$/, "") || "HEAD";
+          const treeCommit = this.resolveCommitRef(baseRef) || this.headCommit;
           const rows = [];
-          for (const [fn, content] of Object.entries(this.headCommit.files)) {
+          for (const [fn, content] of Object.entries(treeCommit.files || {})) {
             const oid = await this.sha1Blob(content);
             rows.push(`100644 blob ${oid}\t${fn}`);
           }
           return { out: rows.join("\n") };
         }
-        const commitObj = (target === "HEAD")
-          ? this.headCommit
-          : this.commits.find(c => c.id.startsWith(target));
+        if (target.includes(":")) {
+          const [refPart, fPart] = target.split(":");
+          const cObj = refPart ? this.resolveCommitRef(refPart) : null;
+          const content = cObj ? cObj.files?.[fPart] : this.index[fPart];
+          if (content === undefined) {
+            return this.fail(`fatal: Not a valid object name ${target}`);
+          }
+          return { out: content };
+        }
+        const commitObj = this.resolveCommitRef(target);
         if (!commitObj) {
           return this.fail(`fatal: Not a valid object name ${target}`);
         }
@@ -1387,28 +1955,27 @@ const VFSGit = {
     }
 
     if (cmd.startsWith("git rev-parse")) {
+      if (cmd.includes("--show-toplevel")) {
+        return { out: `/c/Users/dev/projects/${this.repoName}` };
+      }
+      if (cmd.includes("--git-dir")) {
+        return { out: ".git" };
+      }
+      if (cmd.includes("--is-inside-work-tree")) {
+        return { out: "true" };
+      }
       if (this.unborn) {
         return this.fail("fatal: ambiguous argument 'HEAD': unknown revision or path not in the working tree.");
       }
       const parts = cmd.split(/\s+/);
-      const ref = parts[parts.length - 1];
-      if (ref === "HEAD") return { out: this.headCommit.id };
-      if (ref === "HEAD~1" || ref === "HEAD^" || ref === "HEAD^1") {
-        return { out: this.headCommit.parent || (this.commits[1] && this.commits[1].id) || this.headCommit.id };
+      const ref = parts.filter(p => !p.startsWith("-")).slice(2)[0] || "HEAD";
+      if (cmd.includes("--abbrev-ref") && (ref === "HEAD" || ref === "@")) {
+        return { out: this.detached ? "HEAD" : this.branch };
       }
-      if (ref === "HEAD~2") {
-        return { out: (this.commits[2] && this.commits[2].id) || (this.commits[1] && this.commits[1].id) || this.headCommit.id };
+      const resolved = this.resolveCommitRef(ref);
+      if (resolved) {
+        return { out: cmd.includes("--short") ? resolved.id.slice(0, 7) : resolved.id };
       }
-      if (ref === "HEAD^2") {
-        if (!this.headCommit.parent2) {
-          return this.fail(`fatal: ambiguous argument 'HEAD^2': unknown revision or path not in the working tree.`);
-        }
-        return { out: this.headCommit.parent2 };
-      }
-      if (this.branches[ref]) return { out: this.branches[ref] };
-      if (this.tags[ref]) return { out: this.tags[ref] };
-      const byHash = this.commits.find(c => c.id.startsWith(ref));
-      if (byHash) return { out: byHash.id };
       return this.fail(`fatal: ambiguous argument '${ref}': unknown revision or path not in the working tree.`);
     }
 
@@ -1439,7 +2006,7 @@ const VFSGit = {
 
     if (cmd.startsWith("git status")) {
       const flagsPart = cmd.slice("git status".length);
-      const isShort = /(?:^|\s)-[a-z]*s[a-z]*(?:\s|$)/.test(flagsPart) || flagsPart.includes("--short");
+      const isShort = /(?:^|\s)-[a-z]*s[a-z]*(?:\s|$)/.test(flagsPart) || flagsPart.includes("--short") || flagsPart.includes("--porcelain");
       const showBranch = /(?:^|\s)-[a-z]*b[a-z]*(?:\s|$)/.test(flagsPart) || flagsPart.includes("--branch");
       if (this.unborn && Object.keys(this.index).length === 0) {
         const untracked = Object.keys(this.worktree).map(f => `?? ${f}`).join("\n");
@@ -1463,37 +2030,62 @@ const VFSGit = {
       return { out: "(brak slotu konfliktu)" };
     }
 
-    if (cmd.startsWith("git show origin/main:")) {
-      const f = cmd.split("origin/main:")[1].trim();
-      const origId = this.branches["origin/main"];
-      const origCommit = this.commits.find(c => c.id === origId) || this.headCommit;
-      return { out: origCommit.files[f] ?? `fatal: path '${f}' does not exist in 'origin/main'` };
-    }
-
-    if (cmd.startsWith("git show HEAD~1:")) {
-      const f = cmd.split("HEAD~1:")[1].trim();
-      const prevCommit = this.commits[1] || this.headCommit;
-      return { out: prevCommit.files[f] ?? `fatal: path '${f}' does not exist in 'HEAD~1'` };
-    }
-
-    if (cmd.startsWith("git show HEAD:")) {
-      const f = cmd.split("HEAD:")[1].trim();
-      return { out: this.headCommit.files[f] ?? `fatal: path '${f}' does not exist in 'HEAD'` };
-    }
-
     if (cmd.startsWith("git show :")) {
       const f = cmd.split(":")[1].trim();
       return { out: this.index[f] ?? `fatal: path '${f}' does not exist in index` };
     }
 
-    if (cmd === "git show" || cmd === "git show HEAD" || cmd.startsWith("git show ")) {
-      const c = this.headCommit;
-      const prev = this.commits[1] || { files: {} };
+    if (cmd.startsWith("git show ") && cmd.includes(":")) {
+      const colonMatch = cmd.match(/^git\s+show\s+(?:-\S+\s+)*([^:\s]+):(\S+)$/);
+      if (colonMatch) {
+        const [, refPart, f] = colonMatch;
+        const refCommit = this.resolveCommitRef(refPart);
+        if (!refCommit) {
+          return this.fail(`fatal: invalid object name '${refPart}'.`);
+        }
+        return { out: (refCommit.files && refCommit.files[f]) ?? `fatal: path '${f}' does not exist in '${refPart}'` };
+      }
+    }
+
+    if (cmd === "git show" || cmd.startsWith("git show ")) {
+      if (this.unborn) {
+        return this.fail(`fatal: your current branch '${this.branch}' does not have any commits yet`);
+      }
+      const showTokens = cmd.split(/\s+/).slice(2);
+      const refArg = showTokens.find(t => !t.startsWith("-")) || "HEAD";
+      const c = this.resolveCommitRef(refArg) || this.headCommit;
+      const cIdx = this.commits.findIndex(cm => cm.id === c.id);
+      const prev = (c.parent && this.commits.find(cm => cm.id === c.parent)) || (cIdx >= 0 && this.commits[cIdx + 1]) || { files: {} };
       const f = primaryFile || Object.keys(c.files || {})[0] || "README.md";
-      const diffPart = this.makeDiff(prev.files[f] || "", c.files[f] || "", `a/${f}`, `b/${f}`);
+      const dec = this.formatCommitDecorations(c.id, c.id === this.headCommit.id);
+
+      if (cmd.includes("--oneline") && (cmd.includes("-s") || cmd.includes("--no-patch"))) {
+        return { out: `${c.id}${dec} ${c.msg}` };
+      }
+      if (cmd.includes("--name-only")) {
+        return { out: [`commit ${c.id}${dec}`, `    ${c.msg}`, "", ...Object.keys(c.files || {})].join("\n") };
+      }
+      if (cmd.includes("--stat")) {
+        const fList = Object.keys(c.files || {});
+        const statLines = fList.map(fn => ` ${fn} | ${String((c.files[fn] || "").split("\n").length)} +`);
+        return {
+          out: [
+            `commit ${c.id}${dec}`,
+            `Author: ${this.config["user.name"]} <${this.config["user.email"]}>`,
+            `Date:   Sat Oct 24 19:20:00 2026 +0200`,
+            "",
+            `    ${c.msg}`,
+            "",
+            ...statLines
+          ].join("\n")
+        };
+      }
+      const diffPart = (cmd.includes("-s") || cmd.includes("--no-patch"))
+        ? ""
+        : this.makeDiff((prev.files && prev.files[f]) || "", (c.files && c.files[f]) || "", `a/${f}`, `b/${f}`);
       return {
         out: [
-          `commit ${c.id} (HEAD -> ${this.branch})`,
+          `commit ${c.id}${dec}`,
           `Author: ${this.config["user.name"]} <${this.config["user.email"]}>`,
           `Date:   Sat Oct 24 19:20:00 2026 +0200`,
           "",
@@ -1592,7 +2184,15 @@ const VFSGit = {
 
     // 5. diff
     if (cmd.startsWith("git diff")) {
-      const f = primaryFile;
+      const diffArgs = cmd.split(/\s+/).slice(2);
+      const nonFlags = diffArgs.filter(a => !a.startsWith("-"));
+      const fileArg = nonFlags.find(a =>
+        (this.worktree && this.worktree[a] !== undefined) ||
+        (this.index && this.index[a] !== undefined) ||
+        (this.headCommit && this.headCommit.files && this.headCommit.files[a] !== undefined)
+      );
+      const f = fileArg || primaryFile || Object.keys(this.worktree)[0] || "README.md";
+
       if (cmd.includes("--check")) {
         const targetMap = (cmd.includes("--staged") || cmd.includes("--cached")) ? this.index : this.worktree;
         const warnings = [];
@@ -1609,10 +2209,39 @@ const VFSGit = {
         }
         return { out: warnings.length ? warnings.join("\n") : "(brak błędów białych znaków — czysto)" };
       }
-      if (cmd.includes("--name-only")) {
+      if (cmd.includes("--name-only") || cmd.includes("--name-status")) {
+        const isStatus = cmd.includes("--name-status");
         const changed = Object.keys(this.worktree).filter(k => this.getShortStatusForFile(k).trim() !== "" && this.getShortStatusForFile(k) !== "??");
-        return { out: changed.join("\n") };
+        return {
+          out: changed.map(k => isStatus ? `${this.getShortStatusForFile(k).trim() || "M"}\t${k}` : k).join("\n")
+        };
       }
+
+      const refTokens = nonFlags.filter(a => a !== fileArg);
+      if (refTokens.length === 1 && refTokens[0].includes("..")) {
+        const [r1, r2] = refTokens[0].split(/\.{2,3}/);
+        const c1 = this.resolveCommitRef(r1 || "HEAD") || this.headCommit;
+        const c2 = this.resolveCommitRef(r2 || "HEAD") || this.headCommit;
+        return { out: this.makeDiff((c1.files && c1.files[f]) || "", (c2.files && c2.files[f]) || "", `a/${f} (${r1 || "HEAD"})`, `b/${f} (${r2 || "HEAD"})`) };
+      }
+      if (refTokens.length >= 2) {
+        const c1 = this.resolveCommitRef(refTokens[0]);
+        const c2 = this.resolveCommitRef(refTokens[1]);
+        if (c1 && c2) {
+          return { out: this.makeDiff((c1.files && c1.files[f]) || "", (c2.files && c2.files[f]) || "", `a/${f} (${refTokens[0]})`, `b/${f} (${refTokens[1]})`) };
+        }
+      }
+      if (refTokens.length === 1) {
+        const refName = refTokens[0];
+        const c1 = this.resolveCommitRef(refName);
+        if (c1) {
+          if (cmd.includes("--staged") || cmd.includes("--cached")) {
+            return { out: this.makeDiff((c1.files && c1.files[f]) || "", this.index[f], `a/${f} (${refName})`, `b/${f} (Index)`) };
+          }
+          return { out: this.makeDiff((c1.files && c1.files[f]) || "", this.worktree[f], `a/${f} (${refName})`, `b/${f} (Worktree)`) };
+        }
+      }
+
       if (cmd.includes("--staged") || cmd.includes("--cached")) {
         return { out: this.makeDiff(this.headCommit.files[f], this.index[f], `a/${f} (HEAD)`, `b/${f} (Index)`) };
       }
@@ -1624,14 +2253,15 @@ const VFSGit = {
 
     // 6. restore, rm, mv, add, commit
     if (cmd.startsWith("git restore")) {
-      const parts = cmd.split(/\s+/);
-      const lastArg = parts[parts.length - 1];
+      const parts = cmd.split(/\s+/).slice(2);
+      const nonFlagArgs = parts.filter((a, idx) => !a.startsWith("-") && parts[idx - 1] !== "-s" && parts[idx - 1] !== "--source");
+      const lastArg = nonFlagArgs[nonFlagArgs.length - 1] || parts[parts.length - 1];
       const f = (this.worktree[lastArg] !== undefined || this.index[lastArg] !== undefined || this.headCommit.files[lastArg] !== undefined)
         ? lastArg
         : primaryFile;
-      const hasStaged = cmd.includes("--staged") || cmd.includes("-S");
-      const hasWorktree = cmd.includes("--worktree") || cmd.includes("-W") || !hasStaged;
-      const fromHead = cmd.includes("--source=HEAD") || cmd.includes("-s HEAD") || hasStaged;
+      const hasStaged = cmd.includes("--staged") || cmd.includes("-S") || cmd.includes("-SW") || cmd.includes("-WS");
+      const hasWorktree = cmd.includes("--worktree") || cmd.includes("-W") || cmd.includes("-SW") || cmd.includes("-WS") || !hasStaged;
+      const fromHead = cmd.includes("--source=HEAD") || cmd.includes("-s HEAD") || cmd.includes("--source HEAD") || hasStaged;
 
       if (hasStaged) {
         if (this.headCommit.files[f] !== undefined) {
@@ -1650,7 +2280,7 @@ const VFSGit = {
     }
 
     if (cmd.startsWith("git rm")) {
-      const parts = cmd.split(/\s+/);
+      const parts = cmd.split(/\s+/).slice(2).filter(a => !a.startsWith("-"));
       const f = parts[parts.length - 1];
       const isCached = cmd.includes("--cached");
       if (this.index[f] !== undefined) {
@@ -1880,11 +2510,16 @@ const VFSGit = {
     }
 
     if (cmd.startsWith("git reflog")) {
-      return { out: this.reflogEntries.join("\n") };
+      const nMatch = cmd.match(/(?:-n\s*(\d+)|-(\d+))/);
+      const limit = nMatch ? parseInt(nMatch[1] || nMatch[2], 10) : this.reflogEntries.length;
+      return { out: this.reflogEntries.slice(0, limit).join("\n") };
     }
 
     // 8. Gałęzie, switch, checkout, merge, rebase, cherry-pick
     if (cmd.startsWith("git branch")) {
+      if (cmd.includes("--show-current")) {
+        return { out: this.detached ? "" : this.branch };
+      }
       if (cmd.includes("-d") || cmd.includes("-D")) {
         const parts = cmd.split(/\s+/);
         const delBr = parts[parts.length - 1];
@@ -1921,9 +2556,10 @@ const VFSGit = {
         return { out: "" };
       }
       const parts = cmd.split(/\s+/);
-      const showRemoteOnly = cmd.includes("-r");
-      const showAll = cmd.includes("-a");
-      if (parts.length === 2 || cmd.includes("-v") || showAll || showRemoteOnly) {
+      const showRemoteOnly = cmd.includes("-r") || cmd.includes("--remotes");
+      const showAll = cmd.includes("-a") || cmd.includes("--all") || cmd.includes("-va") || cmd.includes("-av");
+      const isReadList = parts.length === 2 || cmd.includes("-v") || cmd.includes("-l") || cmd.includes("--list") || cmd.includes("--merged") || cmd.includes("--no-merged") || showAll || showRemoteOnly;
+      if (isReadList) {
         const entries = Object.entries(this.branches).filter(([b]) => {
           if (showRemoteOnly) return b.includes("/");
           if (showAll) return true;
@@ -1948,7 +2584,7 @@ const VFSGit = {
           return { out: `Updated 1 path from the index` };
         }
       }
-      if (cmd.includes("-c") || cmd.includes("-b")) {
+      if (cmd.includes("-c") || cmd.includes("--create") || cmd.includes("-b")) {
         this.branch = target;
         this.detached = false;
         this.branches[target] = this.headCommit.id;
@@ -1980,7 +2616,7 @@ const VFSGit = {
     }
 
     if (cmd.startsWith("git merge")) {
-      const parts = cmd.split(/\s+/);
+      const parts = cmd.split(/\s+/).slice(2).filter(p => !p.startsWith("-"));
       const otherBr = parts[parts.length - 1];
       const otherId = this.branches[otherBr];
       if (!otherId) {
@@ -2066,6 +2702,23 @@ const VFSGit = {
         this.remotes[name] = url;
         return { out: "" };
       }
+      if (cmd.includes("get-url ")) {
+        const parts = cmd.split(/\s+/);
+        const name = parts[parts.length - 1];
+        return { out: this.remotes[name] || `error: No such remote '${name}'` };
+      }
+      if (cmd.includes("show ")) {
+        const parts = cmd.split(/\s+/);
+        const name = parts[parts.length - 1];
+        const url = this.remotes[name];
+        if (!url) return { out: `fatal: '${name}' does not appear to be a git repository` };
+        return {
+          out: `* remote ${name}\n  Fetch URL: ${url}\n  Push  URL: ${url}\n  HEAD branch: main`
+        };
+      }
+      if (cmd === "git remote") {
+        return { out: Object.keys(this.remotes).join("\n") };
+      }
       return {
         out: Object.entries(this.remotes).map(([name, url]) => `${name}\t${url} (fetch)\n${name}\t${url} (push)`).join("\n")
       };
@@ -2150,7 +2803,7 @@ const VFSGit = {
 
     if (cmd.startsWith("git tag")) {
       const m = cmd.match(/git\s+tag\s+(?:-a\s+)?(\S+)/);
-      if (m && m[1] !== "-l") {
+      if (m && !["-l", "--list", "-n"].includes(m[1])) {
         this.tags[m[1]] = this.headCommit.id;
         return { out: "" };
       }
@@ -2177,27 +2830,44 @@ const VFSGit = {
       }
       const nMatch = cmd.match(/(?:-n\s*(\d+)|-(\d+))/);
       const limit = nMatch ? parseInt(nMatch[1] || nMatch[2], 10) : this.commits.length;
-      const list = this.commits.slice(0, limit);
+      const logArgs = cmd.split(/\s+/).slice(2);
+      const revArg = logArgs.find((a, idx) => !a.startsWith("-") && logArgs[idx - 1] !== "-n");
+      let startIdx = 0;
+      if (revArg && !revArg.includes("..")) {
+        const revCommit = this.resolveCommitRef(revArg);
+        if (revCommit) {
+          const foundIdx = this.commits.findIndex(c => c.id === revCommit.id);
+          if (foundIdx >= 0) startIdx = foundIdx;
+        }
+      }
+      const list = this.commits.slice(startIdx, startIdx + limit);
       const isGraph = cmd.includes("--graph");
       const isOneline = cmd.includes("--oneline");
 
       if (isOneline || isGraph) {
         return {
           out: list.map((c, idx) => {
-            const dec = idx === 0 ? ` (HEAD -> ${this.branch})` : "";
+            const dec = this.formatCommitDecorations(c.id, startIdx === 0 && idx === 0);
             return `${isGraph ? "* " : ""}${c.id}${dec} ${c.msg}`;
           }).join("\n")
         };
       }
 
       return {
-        out: list.map((c, idx) => [
-          `commit ${c.id}${idx === 0 ? ` (HEAD -> ${this.branch})` : ""}`,
-          `Author: ${this.config["user.name"]} <${this.config["user.email"]}>`,
-          `Date:   Sat Oct 24 19:20:00 2026 +0200`,
-          "",
-          `    ${c.msg}`
-        ].join("\n")).join("\n\n")
+        out: list.map((c, idx) => {
+          const dec = this.formatCommitDecorations(c.id, startIdx === 0 && idx === 0);
+          const statBlock = cmd.includes("--stat")
+            ? ["", ...Object.keys(c.files || {}).map(fn => ` ${fn} | ${String((c.files[fn] || "").split("\n").length)} +`)]
+            : [];
+          return [
+            `commit ${c.id}${dec}`,
+            `Author: ${this.config["user.name"]} <${this.config["user.email"]}>`,
+            `Date:   Sat Oct 24 19:20:00 2026 +0200`,
+            "",
+            `    ${c.msg}`,
+            ...statBlock
+          ].join("\n");
+        }).join("\n\n")
       };
     }
 

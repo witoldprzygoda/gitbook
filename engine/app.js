@@ -1,5 +1,5 @@
 const App = {
-  appVersion: "0.12",
+  appVersion: "0.13",
   appUpdatedDate: "2026-11-08",
 
   rawSteps: [],       // Wszystkie kroki w repozytorium
@@ -468,6 +468,15 @@ const App = {
       }
       if (line.startsWith("💡")) {
         return `<span class="term-hint">${this.escapeHtml(line)}</span>`;
+      }
+      if (line.startsWith("ℹ️")) {
+        return `<span style="color:#38bdf8; font-weight:700;">${this.escapeHtml(line)}</span>`;
+      }
+      if (line.startsWith("🔒")) {
+        return `<span style="color:#e2e8f0;">${this.escapeHtml(line)}</span>`;
+      }
+      if (line.startsWith("▶")) {
+        return `<span style="color:#facc15; font-weight:700;">${this.escapeHtml(line)}</span>`;
       }
       if (/^[╔║╚]/.test(line)) {
         return `<span class="syn-fn">${this.escapeHtml(line)}</span>`;
@@ -1269,6 +1278,14 @@ const App = {
       if (syntaxDiag) {
         logCmd("syntax_err");
         outEl.innerHTML += `<div class="out">${this.highlightTerminalOutput(syntaxDiag, cmdText)}</div>`;
+        outEl.scrollTop = outEl.scrollHeight;
+        return;
+      }
+
+      const validScopeInfo = VFSGit.explainOutOfScopeValidCommand(cmdText, guidedCmds, firstUnpassedIdx);
+      if (validScopeInfo) {
+        logCmd(firstUnpassedIdx === -1 ? "already_done" : "valid_out_of_scope");
+        outEl.innerHTML += `<div class="out">${this.highlightTerminalOutput(validScopeInfo, cmdText)}</div>`;
         outEl.scrollTop = outEl.scrollHeight;
         return;
       }
