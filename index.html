@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Git &amp; GitHub Supervised Lab Engine</title>
-  <link rel="stylesheet" href="css/lab-theme.css?v=20261107g" />
+  <link rel="stylesheet" href="css/lab-theme.css?v=20261108d" />
 </head>
 <body>
 
@@ -190,7 +190,7 @@
           </h2>
         </div>
         <div style="display:flex; align-items:center; gap:8px;">
-          <span id="appVersionBadge" style="font-family:var(--mono); font-size:11px; color:#94a3b8; background:#0f172a; border:1px solid #334155; border-radius:4px; padding:4px 8px; white-space:nowrap;" title="Numer wersji aplikacji oraz data ostatniej aktualizacji">Wersja 0.11 • aktualizacja: 2026-11-08</span>
+          <span id="appVersionBadge" style="font-family:var(--mono); font-size:11px; color:#94a3b8; background:#0f172a; border:1px solid #334155; border-radius:4px; padding:4px 8px; white-space:nowrap;" title="Numer wersji aplikacji oraz data ostatniej aktualizacji">Wersja 0.12 • aktualizacja: 2026-11-08</span>
           <button class="btn-top" onclick="App.closeUserSessionModal()">✕ Zamknij</button>
         </div>
       </div>
@@ -674,7 +674,7 @@
                 <div id="hintDropdownBody" class="exp-body"></div>
               </div>
             </div>
-            <button class="btn-top btn-xs" style="background:#fff; color:#0f172a;" onclick="App.resetCurrentStep()">
+            <button class="btn-top btn-xs" id="btnResetTask" style="background:#fff; color:#0f172a;" onclick="App.resetCurrentStep()">
               <svg class="ico2d" viewBox="0 0 16 16"><path d="M13 8a5 5 0 1 1-1.4-3.5M13 2v3h-3" fill="none" stroke="#2563eb" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
               <span>Reset</span>
             </button>
@@ -783,6 +783,6 @@
   <script src="curriculum/m05-remotes-gh.js?v=20261107c"></script>
   <script src="engine/storage-scorm.js?v=20261107c"></script>
   <script src="engine/vfs-git.js?v=20261107c"></script>
-  <script src="engine/app.js?v=20261108c"></script>
+  <script src="engine/app.js?v=20261108d"></script>
 </body>
 </html>

@@ -58,11 +58,19 @@ MODEL_ID = os.environ.get("ELEVENLABS_MODEL_ID", "eleven_v4")
 def get_voice_id_for_audio(audio_id: str) -> str:
     """
     Dla dolnego lewego panelu z zadaniami (losowane otwarcia task_opener_*,
-    instrukcje _task_guide oraz komunikat zaliczenia zadania step_completed)
+    task_done_*, task_partial_*, instrukcje _task_guide, _task_rem_*
+    oraz komunikat zaliczenia zadania step_completed)
     używamy głosu żeńskiego Magdalena (N0GCuK2B0qwWozQNTS8F).
     Pozostałe kwestie czyta główny lektor.
     """
-    if audio_id.startswith("task_opener_") or audio_id.endswith("_task_guide") or audio_id == "step_completed":
+    if (
+        audio_id.startswith("task_opener_")
+        or audio_id.startswith("task_done_")
+        or audio_id.startswith("task_partial_")
+        or audio_id.endswith("_task_guide")
+        or "_task_rem_" in audio_id
+        or audio_id == "step_completed"
+    ):
         return TASK_VOICE_ID
     return VOICE_ID
 
@@ -81,7 +89,14 @@ def decorate_for_eleven_v4(audio_id: str, raw_text: str) -> str:
     # 1. Dobór otwierającego znacznika emocji zależnie od roli fragmentu
     if audio_id == "voice_selected":
         opener = "[cheerfully, warmly]"
-    elif audio_id == "step_completed" or audio_id.startswith("task_opener_") or audio_id.endswith("_task_guide"):
+    elif (
+        audio_id == "step_completed"
+        or audio_id.startswith("task_opener_")
+        or audio_id.startswith("task_done_")
+        or audio_id.startswith("task_partial_")
+        or audio_id.endswith("_task_guide")
+        or "_task_rem_" in audio_id
+    ):
         opener = "[calm, matter-of-fact]"
     elif audio_id.endswith("_b01"):
         if "witaj" in lower or "gratulacje" in lower:
@@ -169,6 +184,20 @@ def extract_all_effective_beats():
         text: op.text + "."
       });
     }
+    for (const op of (App.taskDoneOpeners || [])) {
+      out.push({
+        stepId: "task_openers",
+        audioId: op.id,
+        text: op.text + "."
+      });
+    }
+    for (const op of (App.taskPartialOpeners || [])) {
+      out.push({
+        stepId: "task_openers",
+        audioId: op.id,
+        text: op.text + "."
+      });
+    }
     for (const step of App.rawSteps) {
       const tier = App.getStepEffectiveTier(step);
       const beats = App.getEffectiveBeats(step);
@@ -181,6 +210,15 @@ def extract_all_effective_beats():
             text: b.taskBodyText || b.voiceText
           });
         }
+      }
+      const totalStages = Array.isArray(step.assertions) ? step.assertions.length : 0;
+      for (let stageIdx = 1; stageIdx < totalStages; stageIdx++) {
+        out.push({
+          stepId: step.id,
+          tier: tier,
+          audioId: `${step.id}_task_rem_s${stageIdx + 1}`,
+          text: App.buildPartialTaskBodyText(step, stageIdx)
+        });
       }
     }
     process.stdout.write(JSON.stringify(out));

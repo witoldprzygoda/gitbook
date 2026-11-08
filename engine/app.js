@@ -1,5 +1,5 @@
 const App = {
-  appVersion: "0.11",
+  appVersion: "0.12",
   appUpdatedDate: "2026-11-08",
 
   rawSteps: [],       // Wszystkie kroki w repozytorium
@@ -1163,19 +1163,36 @@ const App = {
     const box = document.getElementById("guidedInstructionBox");
     if (!box) return;
     const step = this.allSteps[this.currentStepIdx];
+    if (!step) return;
     const cmds = this.extractRunnableCommands(step);
+    const results = Array.isArray(this.lastAssertionResults) ? this.lastAssertionResults : [];
+    const firstUnpassedIdx = results.findIndex(r => !r.pass);
+    const allDone = results.length > 0 && firstUnpassedIdx === -1;
 
     const cmdButtonsHTML = cmds.length > 0
       ? cmds.map((c, i) => {
           const safeCmd = c.replace(/'/g, "\\'").replace(/"/g, "&quot;");
-          return `<button class="guided-cmd-btn" onclick="App.runOrFillCommand('${safeCmd}', 'clicked_chip')" title="Kliknij, aby wpisać i wykonać tę komendę w terminalu">▶ ${i + 1}. <code>${this.escapeHtml(c)}</code></button>`;
+          const isStageDone = allDone || (results[i] && results[i].pass);
+          const isNextStage = !allDone && i === (firstUnpassedIdx >= 0 ? firstUnpassedIdx : 0);
+          const cls = isStageDone ? "guided-cmd-btn done-cmd-btn" : (isNextStage ? "guided-cmd-btn next-cmd-btn" : "guided-cmd-btn");
+          const prefix = isStageDone ? "✓" : "▶";
+          const title = isStageDone
+            ? "Ten etap ćwiczenia został już wykonany"
+            : "Kliknij, aby wpisać i wykonać tę komendę w terminalu";
+          return `<button class="${cls}" id="guidedCmdBtn_${i}" onclick="App.runOrFillCommand('${safeCmd}', 'clicked_chip')" title="${title}">${prefix} ${i + 1}. <code>${this.escapeHtml(c)}</code></button>`;
         }).join(" ")
       : `<code>${this.escapeHtml(step.hint || "git status -s")}</code>`;
+
+    const actionLabel = allDone
+      ? `<span style="font-weight:700; color:#15803d;">Ćwiczenie wykonane (kliknij Reset, aby powtórzyć):</span>`
+      : (firstUnpassedIdx > 0
+          ? `<span style="font-weight:700; color:#b45309;">Dokończ pozostały etap w terminalu (lub kliknij):</span>`
+          : `<span style="font-weight:700; color:#1e40af;">Wykonaj w terminalu (lub kliknij):</span>`);
 
     box.innerHTML = `
       <div class="task-full-desc">${this.replaceEmojisWith2D(this.escapeHtml(step.taskTitle))}</div>
       <div class="task-cmd-row">
-        <span style="font-weight:700; color:#1e40af;">Wykonaj w terminalu (lub kliknij):</span>
+        ${actionLabel}
         ${cmdButtonsHTML}
       </div>`;
   },
@@ -3147,6 +3164,8 @@ const App = {
 
     const justPassedNow = allDone && !this.currentStepAssertionsPassed && !this.isLoadingStep;
     this.currentStepAssertionsPassed = allDone;
+    this.renderGuidedInstructions();
+    this.renderVoiceTranscriptDropdown(step);
 
     if (allDone) {
       this.completedSteps.add(step.id);
@@ -3846,17 +3865,34 @@ const App = {
       ];
     }
 
-    // 2. Podsumowanie zadania praktycznego (_task_guide) — zsynchronizowane z treścią polecenia lektorki Magdaleny
-    const isTaskGuide = Boolean(beat.isTaskGuide || (beat.audioId && beat.audioId.endsWith("_task_guide")));
+    // 2. Podsumowanie zadania praktycznego (_task_guide) — zsynchronizowane ze stanem wykonania ćwiczenia (0% / częściowo / 100%)
+    const isTaskGuide = Boolean(beat.isTaskGuide || (beat.audioId && beat.audioId.includes("_task_")));
     if (isTaskGuide) {
-      const getBtn = () => document.querySelector("#guidedInstructionBox .guided-cmd-btn") || document.getElementById("guidedInstructionBox") || getLB();
+      const taskStatus = this.getTaskExecutionStatus(step);
+      const getResetBtn = () => document.getElementById("btnResetTask") || document.getElementById("guidedInstructionBox") || getLB();
+      const getBtn = () =>
+        document.querySelector("#guidedInstructionBox .guided-cmd-btn.next-cmd-btn") ||
+        document.querySelector("#guidedInstructionBox .guided-cmd-btn") ||
+        document.getElementById("guidedInstructionBox") ||
+        getLB();
       const getBox = () => document.getElementById("guidedInstructionBox") || getLB();
       const getTerm = () => document.getElementById("termInputRow") || getRB();
-      const bodyStr = String(beat.taskBodyText || vt);
+      const bodyStr = String(beat.activeTaskBodyText || beat.taskBodyText || vt);
       const termMatch = /Wpisz\s+w\s+terminalu|Możesz\s+wpisać\s+poleceni\w*\s+w\s+terminalu/i.exec(bodyStr);
-      const btnMatch = /albo\s+kliknij\s+gotowy\s+przycisk|lub\s+kliknąć\s+gotowy\s+przycisk/i.exec(bodyStr);
+      const btnMatch = /albo\s+kliknij\s+(?:gotowy|kolejny|kolejne)\s+przycisk|lub\s+kliknąć\s+gotowy\s+przycisk/i.exec(bodyStr);
       const pTerm = termMatch ? Math.max(0.18, this.textOffsetToSpeechProgress(bodyStr, termMatch.index)) : 0.28;
       const pBtn = btnMatch ? Math.max(pTerm + 0.16, this.textOffsetToSpeechProgress(bodyStr, btnMatch.index)) : 0.68;
+
+      const firstSegments = (taskStatus.state === "done")
+        ? [
+            { type: "glide", el: getResetBtn, rx: 0.5, ry: 0.3, duration: 460 },
+            { type: "circle", el: getResetBtn, cx: 0.5, cy: 0.5, rx: 0.55, ry: 0.65, maxRx: 55, maxRy: 20, duration: 1150 },
+            { type: "underline", el: getBox, x1: 0.06, x2: 0.72, y: 0.36, duration: 1100 }
+          ]
+        : [
+            { type: "glide", el: getBox, rx: 0.08, ry: 0.35, duration: 500 },
+            { type: "underline", el: getBox, x1: 0.06, x2: 0.72, y: 0.36, duration: 1500 }
+          ];
 
       return [
         {
@@ -3868,10 +3904,7 @@ const App = {
           flashBoxes: ["leftBottom"],
           litPanes: ["leftBottom", "rightBottom"],
           primaryPane: "leftBottom",
-          segments: [
-            { type: "glide", el: getBox, rx: 0.08, ry: 0.35, duration: 500 },
-            { type: "underline", el: getBox, x1: 0.06, x2: 0.72, y: 0.36, duration: 1500 }
-          ]
+          segments: firstSegments
         },
         {
           atProgress: pTerm,
@@ -4318,20 +4351,112 @@ const App = {
     { id: "task_opener_13", text: "Teraz przetestuj to własnoręcznie" }
   ],
 
-  lastTaskOpenerIdx: -1,
+  taskDoneOpeners: [
+    { id: "task_done_01", text: "Ćwiczenie w tym kroku masz już w całości wykonane! Jeśli chcesz je powtórzyć, kliknij przycisk Reset, a następnie" },
+    { id: "task_done_02", text: "Zadanie praktyczne zostało już przez Ciebie zaliczone. Gdybyś chciał wykonać je ponownie po kliknięciu Reset, przypomnę jego treść" },
+    { id: "task_done_03", text: "Świetnie, to zadanie masz już w całości za sobą! Jeśli chcesz przećwiczyć je jeszcze raz, użyj przycisku Reset i" },
+    { id: "task_done_04", text: "Wszystkie etapy tego ćwiczenia są już zaliczone! Aby wykonać je od nowa, kliknij przycisk Reset, a potem" }
+  ],
 
-  pickRandomTaskOpener() {
-    const list = this.taskGuideOpeners;
-    if (!Array.isArray(list) || list.length === 0) {
-      return { id: "task_opener_01", text: "Teraz Twoja kolej" };
-    }
+  taskPartialOpeners: [
+    { id: "task_partial_01", text: "Zadanie praktyczne masz już częściowo wykonane! Jeśli chcesz je dokończyć" },
+    { id: "task_partial_02", text: "Pierwszą część ćwiczenia masz już za sobą. Aby je dokończyć" },
+    { id: "task_partial_03", text: "Część tego zadania została już zaliczona! Aby wykonać pozostały etap" },
+    { id: "task_partial_04", text: "Ćwiczenie jest już częściowo zaliczone. Jeśli chcesz je sfinalizować" }
+  ],
+
+  lastTaskOpenerIdx: -1,
+  lastTaskDoneOpenerIdx: -1,
+  lastTaskPartialOpenerIdx: -1,
+
+  pickRandomFromList(list, propName) {
+    if (!Array.isArray(list) || list.length === 0) return null;
     if (list.length === 1) return list[0];
     let idx = Math.floor(Math.random() * list.length);
-    if (idx === this.lastTaskOpenerIdx) {
+    if (idx === this[propName]) {
       idx = (idx + 1 + Math.floor(Math.random() * (list.length - 1))) % list.length;
     }
-    this.lastTaskOpenerIdx = idx;
+    this[propName] = idx;
     return list[idx];
+  },
+
+  pickRandomTaskOpener() {
+    return this.pickRandomFromList(this.taskGuideOpeners, "lastTaskOpenerIdx") || { id: "task_opener_01", text: "Teraz Twoja kolej" };
+  },
+
+  getTaskExecutionStatus(step) {
+    const currentStep = this.allSteps[this.currentStepIdx];
+    const targetStep = step || currentStep;
+    if (!targetStep || !Array.isArray(targetStep.assertions) || targetStep.assertions.length === 0) {
+      return { state: "none", passedCount: 0, totalCount: 0, firstUnpassedIdx: 0 };
+    }
+    // Jeśli sprawdzamy aktualnie otwarty krok na ekranie, bierzemy żywe wyniki asercji
+    if (currentStep && targetStep.id === currentStep.id && Array.isArray(this.lastAssertionResults) && this.lastAssertionResults.length === targetStep.assertions.length) {
+      const passedCount = this.lastAssertionResults.filter(r => r.pass).length;
+      const totalCount = this.lastAssertionResults.length;
+      const firstUnpassedIdx = this.lastAssertionResults.findIndex(r => !r.pass);
+      if (passedCount >= totalCount && totalCount > 0) {
+        return { state: "done", passedCount, totalCount, firstUnpassedIdx: -1 };
+      }
+      if (passedCount > 0 && firstUnpassedIdx > 0) {
+        return { state: "partial", passedCount, totalCount, firstUnpassedIdx };
+      }
+      return { state: "none", passedCount: 0, totalCount, firstUnpassedIdx: 0 };
+    }
+    if (this.completedSteps && this.completedSteps.has(targetStep.id)) {
+      return { state: "done", passedCount: targetStep.assertions.length, totalCount: targetStep.assertions.length, firstUnpassedIdx: -1 };
+    }
+    return { state: "none", passedCount: 0, totalCount: targetStep.assertions.length, firstUnpassedIdx: 0 };
+  },
+
+  buildPartialTaskBodyText(step, fromStageIdx) {
+    const cmds = this.extractRunnableCommands(step);
+    const remCmds = cmds.slice(fromStageIdx);
+    const cmdHint = remCmds.length > 0 ? remCmds.join(" a następnie ") : (step.hint || "git status -s");
+    const btnPhrase = remCmds.length > 1 ? "kolejne przyciski" : "kolejny przycisk";
+    return `Wpisz w terminalu ${cmdHint}, albo kliknij ${btnPhrase} w ramce zadania. A jeśli wolisz powtórzyć całość od początku, użyj przycisku Reset.`;
+  },
+
+  resolveDynamicTaskGuide(step, baseTaskBodyText, randomize = false) {
+    const status = this.getTaskExecutionStatus(step);
+    if (status.state === "done") {
+      const opener = randomize
+        ? (this.pickRandomFromList(this.taskDoneOpeners, "lastTaskDoneOpenerIdx") || this.taskDoneOpeners[0])
+        : this.taskDoneOpeners[0];
+      const lowerBody = baseTaskBodyText.charAt(0).toLowerCase() + baseTaskBodyText.slice(1);
+      return {
+        state: "done",
+        opener,
+        bodyAudioId: `${step.id}_task_guide`,
+        bodyText: baseTaskBodyText,
+        fullVoiceText: `${opener.text}: ${lowerBody}`
+      };
+    }
+    if (status.state === "partial") {
+      const opener = randomize
+        ? (this.pickRandomFromList(this.taskPartialOpeners, "lastTaskPartialOpenerIdx") || this.taskPartialOpeners[0])
+        : this.taskPartialOpeners[0];
+      const partialBody = this.buildPartialTaskBodyText(step, status.firstUnpassedIdx);
+      const lowerBody = partialBody.charAt(0).toLowerCase() + partialBody.slice(1);
+      return {
+        state: "partial",
+        opener,
+        bodyAudioId: `${step.id}_task_rem_s${status.firstUnpassedIdx + 1}`,
+        bodyText: partialBody,
+        fullVoiceText: `${opener.text}: ${lowerBody}`
+      };
+    }
+    const opener = randomize
+      ? this.pickRandomTaskOpener()
+      : this.taskGuideOpeners[0];
+    const lowerBody = baseTaskBodyText.charAt(0).toLowerCase() + baseTaskBodyText.slice(1);
+    return {
+      state: "none",
+      opener,
+      bodyAudioId: `${step.id}_task_guide`,
+      bodyText: baseTaskBodyText,
+      fullVoiceText: `${opener.text}: ${lowerBody}`
+    };
   },
 
   getEffectiveBeats(step) {
@@ -4362,16 +4487,16 @@ const App = {
       taskBodyText = `${goalSentence}. Wpisz w terminalu ${cmdHint}, albo kliknij gotowy przycisk w ramce zadania.`;
     }
 
-    const defaultOpener = this.taskGuideOpeners[0];
-    const lowerBody = taskBodyText.charAt(0).toLowerCase() + taskBodyText.slice(1);
+    const dyn = this.resolveDynamicTaskGuide(step, taskBodyText, false);
 
     baseBeats.push({
       audioId: `${step.id}_task_guide`,
       isTaskGuide: true,
       taskBodyText,
+      activeTaskBodyText: dyn.bodyText,
       card: baseBeats[baseBeats.length - 1]?.card || (step.cards[0] && step.cards[0].id),
       flashBox: "leftBottom",
-      voiceText: `${defaultOpener.text}: ${lowerBody}`
+      voiceText: dyn.fullVoiceText
     });
     return baseBeats;
   },
@@ -4387,10 +4512,24 @@ const App = {
       return;
     }
 
+    let activeOpener = null;
+    let mainAudioId = beat.audioId;
+    let effectiveVoiceText = beat.voiceText;
+    let timelineRefText = beat.voiceText;
+
+    if (beat.isTaskGuide && beat.taskBodyText) {
+      const dyn = this.resolveDynamicTaskGuide(step, beat.taskBodyText, true);
+      activeOpener = dyn.opener;
+      mainAudioId = dyn.bodyAudioId;
+      effectiveVoiceText = dyn.fullVoiceText;
+      timelineRefText = dyn.bodyText;
+      beat.activeTaskBodyText = dyn.bodyText;
+    }
+
     this.logActivityEvent("director_beat", {
       beatIdx: this.directorBeatIdx,
       totalBeats: beats.length,
-      audioId: beat.audioId || null,
+      audioId: mainAudioId || null,
       cardId: beat.card || null
     });
 
@@ -4401,20 +4540,12 @@ const App = {
       badge.title = `Odtwarzanie audio (${this.directorBeatIdx + 1}/${beats.length})`;
     }
 
-    let activeOpener = null;
-    let effectiveVoiceText = beat.voiceText;
-    if (beat.audioId && beat.audioId.endsWith("_task_guide") && beat.taskBodyText) {
-      activeOpener = this.pickRandomTaskOpener();
-      const lowerBody = beat.taskBodyText.charAt(0).toLowerCase() + beat.taskBodyText.slice(1);
-      effectiveVoiceText = `${activeOpener.text}: ${lowerBody}`;
-    }
     document.getElementById("voiceSubtitle").textContent = effectiveVoiceText;
 
     // Inicjalizacja śledzenia postępu mowy i osi czasu (100% synchronizacji z głosem lektora)
-    const timelineRefText = (beat.isTaskGuide && beat.taskBodyText) ? beat.taskBodyText : effectiveVoiceText;
     this.mainBeatAudioActive = !activeOpener;
     this.mainBeatAudioMetadataLoaded = false;
-    this.usingWebSpeechFallback = (this.selectedVoiceId !== "mp3_eleven" || !beat.audioId);
+    this.usingWebSpeechFallback = (this.selectedVoiceId !== "mp3_eleven" || !mainAudioId);
     this.beatElapsedSpeechMs = 0;
     this.beatEstimatedDurationMs = Math.max(3200, String(timelineRefText || "").length * 68);
 
@@ -4429,9 +4560,9 @@ const App = {
       this.directorBeatIdx++;
       if (this.directorBeatIdx < beats.length) {
         const nextBeat = beats[this.directorBeatIdx];
-        const isTransitionToTask = Boolean(nextBeat && nextBeat.audioId && nextBeat.audioId.endsWith("_task_guide"));
+        const isTransitionToTask = Boolean(nextBeat && nextBeat.isTaskGuide);
         if (isTransitionToTask) {
-          // 1 sekunda oddechu przed przejściem lektora do kwestii o ćwiczeniu ("Teraz...")
+          // 1 sekunda oddechu przed przejściem lektora do kwestii o ćwiczeniu
           this.directorTimer = setTimeout(() => {
             if (this.directorPlaying && !this.directorPaused) {
               this.runDirectorBeat();
@@ -4447,13 +4578,13 @@ const App = {
     };
 
     const audio = this.getAudioPlayerElement();
-    if (this.selectedVoiceId === "mp3_eleven" && beat.audioId && audio) {
+    if (this.selectedVoiceId === "mp3_eleven" && mainAudioId && audio) {
       const playToken = ++this.audioPlayToken;
       this.currentAudioObj = audio;
       let fallbackTriggered = false;
       let retriedAfterAbort = false;
 
-      const fallbackToWebSpeech = () => {
+      const fallbackToWebSpeech = (textToSpeak = effectiveVoiceText) => {
         if (fallbackTriggered || !this.directorPlaying || this.audioPlayToken !== playToken) return;
         fallbackTriggered = true;
         this.usingWebSpeechFallback = true;
@@ -4463,10 +4594,10 @@ const App = {
         audio.onerror = null;
         audio.oncanplay = null;
         audio.onloadedmetadata = null;
-        this.speakViaWebSpeech(effectiveVoiceText, next);
+        this.speakViaWebSpeech(textToSpeak, next);
       };
 
-      const attemptPlay = () => {
+      const attemptPlay = (onFailText) => {
         if (fallbackTriggered || !this.directorPlaying || this.directorPaused || this.audioPlayToken !== playToken) return;
         const playPromise = audio.play();
         if (playPromise && typeof playPromise.catch === "function") {
@@ -4475,11 +4606,11 @@ const App = {
             if (err && err.name === "AbortError") {
               if (!retriedAfterAbort) {
                 retriedAfterAbort = true;
-                setTimeout(attemptPlay, 60);
+                setTimeout(() => attemptPlay(onFailText), 60);
               }
               return;
             }
-            fallbackToWebSpeech();
+            fallbackToWebSpeech(onFailText);
           });
         }
       };
@@ -4501,13 +4632,13 @@ const App = {
         };
         audio.onerror = () => {
           if (this.audioPlayToken !== playToken) return;
-          fallbackToWebSpeech();
+          fallbackToWebSpeech(timelineRefText);
         };
         audio.volume = 1.0;
         audio.muted = false;
-        audio.src = `audio/${beat.audioId}.mp3?v=20261108a`;
+        audio.src = `audio/${mainAudioId}.mp3?v=20261108d`;
         audio.load();
-        attemptPlay();
+        attemptPlay(timelineRefText);
       };
 
       if (activeOpener) {
@@ -4526,9 +4657,9 @@ const App = {
         };
         audio.volume = 1.0;
         audio.muted = false;
-        audio.src = `audio/${activeOpener.id}.mp3?v=20261108a`;
+        audio.src = `audio/${activeOpener.id}.mp3?v=20261108d`;
         audio.load();
-        attemptPlay();
+        attemptPlay(effectiveVoiceText);
       } else {
         startMainBeatAudio();
       }
