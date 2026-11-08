@@ -1,4 +1,7 @@
 const App = {
+  appVersion: "0.11",
+  appUpdatedDate: "2026-11-08",
+
   rawSteps: [],       // Wszystkie kroki w repozytorium
   allSteps: [],       // Kroki przefiltrowane przez aktywne poziomy (enabledTiers)
   currentStepIdx: 0,
@@ -41,6 +44,30 @@ const App = {
   knownProgressCodes: [],
   adminFeedbackThreads: [],
   feedbackSyncTimer: null,
+
+  // Stan systemu telemetrii i logów aktywności (analityka sesji, sprzętu, pisania vs klikania i retencji audio)
+  telemetrySessionId: "",
+  telemetrySeq: 0,
+  telemetryQueue: [],
+  telemetryDeviceProfile: {},
+  telemetryLastInputTs: 0,
+  telemetryIsIdle: false,
+  telemetryTabHiddenAt: 0,
+  telemetryCurrentStepId: "",
+  telemetryStepEnterTs: 0,
+  telemetryUnsentActiveMs: 0,
+  telemetryUnsentIdleMs: 0,
+  telemetryUnsentAudioMs: 0,
+  telemetryTickTimer: null,
+  telemetryFlushTimer: null,
+  cmdTypingStartTs: 0,
+  cmdKeystrokeCount: 0,
+  cmdBackspaceCount: 0,
+  cmdPastedFlag: false,
+  cmdUsedHistoryFlag: false,
+  nextCmdInputMode: null,
+  directorStopReason: null,
+  adminActivitySummary: null,
 
   selectedVoiceId: "mp3_eleven",
   availableSystemVoices: [],
@@ -239,6 +266,7 @@ const App = {
       const found = this.allSteps.findIndex(s => s.id === saved.currentStepId);
       if (found >= 0) startIdx = found;
     }
+    this.initTelemetrySystem();
     this.loadStep(startIdx);
     this.initFeedbackSystem();
 
@@ -931,10 +959,36 @@ const App = {
   },
 
   loadStep(idx) {
+    if (this.directorPlaying) {
+      this.directorStopReason = "step_change";
+    }
     this.toggleDirector(false);
     if (this.allSteps.length === 0) return;
+
+    const prevStepId = this.telemetryCurrentStepId;
+    if (prevStepId) {
+      this.logActivityEvent("step_leave", {
+        deltaActiveMs: this.telemetryUnsentActiveMs,
+        deltaIdleMs: this.telemetryUnsentIdleMs,
+        deltaAudioMs: this.telemetryUnsentAudioMs,
+        completed: this.completedSteps.has(prevStepId)
+      }, prevStepId);
+      this.telemetryUnsentActiveMs = 0;
+      this.telemetryUnsentIdleMs = 0;
+      this.telemetryUnsentAudioMs = 0;
+    }
+
     this.currentStepIdx = Math.max(0, Math.min(idx, this.allSteps.length - 1));
     const step = this.allSteps[this.currentStepIdx];
+    this.telemetryCurrentStepId = step.id;
+    this.telemetryStepEnterTs = Date.now();
+    this.logActivityEvent("step_enter", {
+      stepIdx: this.currentStepIdx,
+      moduleId: step.moduleId,
+      tier: this.getStepEffectiveTier(step),
+      totalBeats: this.getEffectiveBeats(step).length,
+      alreadyCompleted: this.completedSteps.has(step.id)
+    }, step.id);
 
     VFSGit.loadCheckpoint(step.initialRepo);
     this.cards = step.cards.map(c => ({ ...c, open: true }));
@@ -1063,7 +1117,7 @@ const App = {
     const cmds = this.extractRunnableCommands(step);
     const cmdPills = cmds.map((c, i) => {
       const safeCmd = c.replace(/'/g, "\\'").replace(/"/g, "&quot;");
-      return `<button class="guided-cmd-btn" onclick="App.runOrFillCommand('${safeCmd}')" title="Kliknij, aby od razu wykonać w terminalu">▶ ${i + 1}. <code>${this.escapeHtml(c)}</code></button>`;
+      return `<button class="guided-cmd-btn" onclick="App.runOrFillCommand('${safeCmd}', 'clicked_hint')" title="Kliknij, aby od razu wykonać w terminalu">▶ ${i + 1}. <code>${this.escapeHtml(c)}</code></button>`;
     }).join(" ");
 
     body.innerHTML = `
@@ -1114,7 +1168,7 @@ const App = {
     const cmdButtonsHTML = cmds.length > 0
       ? cmds.map((c, i) => {
           const safeCmd = c.replace(/'/g, "\\'").replace(/"/g, "&quot;");
-          return `<button class="guided-cmd-btn" onclick="App.runOrFillCommand('${safeCmd}')" title="Kliknij, aby wpisać i wykonać tę komendę w terminalu">▶ ${i + 1}. <code>${this.escapeHtml(c)}</code></button>`;
+          return `<button class="guided-cmd-btn" onclick="App.runOrFillCommand('${safeCmd}', 'clicked_chip')" title="Kliknij, aby wpisać i wykonać tę komendę w terminalu">▶ ${i + 1}. <code>${this.escapeHtml(c)}</code></button>`;
         }).join(" ")
       : `<code>${this.escapeHtml(step.hint || "git status -s")}</code>`;
 
@@ -1126,12 +1180,13 @@ const App = {
       </div>`;
   },
 
-  async runOrFillCommand(cmdText) {
+  async runOrFillCommand(cmdText, source = "clicked_chip") {
     const input = document.getElementById("cmdIn");
     if (!input) return;
     this.switchWorkbench("term");
     input.value = "";
     input.focus();
+    this.nextCmdInputMode = source;
     await this.executeTerminalCommand(cmdText);
   },
 
@@ -1140,6 +1195,28 @@ const App = {
     const outEl = document.getElementById("termOut");
     outEl.innerHTML += `<div><span class="p-dir">${VFSGit.repoName}</span><span class="p-br">(${VFSGit.branch})</span> $ ${this.highlightTerminalCmd(cmdText)}</div>`;
 
+    // Rozpoznanie sposobu wprowadzenia komendy (pisał z klawiatury vs kliknął przycisk vs wkleił vs strzałka historii)
+    let inputMode = "typed";
+    if (this.nextCmdInputMode) {
+      inputMode = this.nextCmdInputMode;
+    } else if (this.cmdPastedFlag && this.cmdKeystrokeCount <= 2) {
+      inputMode = "pasted";
+    } else if (this.cmdUsedHistoryFlag && this.cmdKeystrokeCount === 0) {
+      inputMode = "history_arrow";
+    }
+    const typingMs = (inputMode === "typed" && this.cmdTypingStartTs > 0)
+      ? Math.max(0, Date.now() - this.cmdTypingStartTs)
+      : 0;
+    const keystrokes = this.cmdKeystrokeCount || 0;
+    const backspaces = this.cmdBackspaceCount || 0;
+
+    this.nextCmdInputMode = null;
+    this.cmdTypingStartTs = 0;
+    this.cmdKeystrokeCount = 0;
+    this.cmdBackspaceCount = 0;
+    this.cmdPastedFlag = false;
+    this.cmdUsedHistoryFlag = false;
+
     const prevResults = this.lastAssertionResults || [];
     const firstUnpassedIdx = prevResults.findIndex(r => !r.pass);
     const minCmdIdx = firstUnpassedIdx <= 0 ? 0 : (this.stagePassedAtCmdCount?.[firstUnpassedIdx - 1] ?? 0);
@@ -1147,6 +1224,21 @@ const App = {
     const guidedCmds = this.extractRunnableCommands(step);
     const matchedGuidedIdx = guidedCmds.findIndex(gc => VFSGit.matchesGuidedCommand(cmdText, gc));
     const isReadOnly = VFSGit.isReadOnlyCommand(cmdText);
+
+    const logCmd = (outcome, extra = {}) => {
+      this.logActivityEvent("cmd_exec", {
+        cmd: String(cmdText).slice(0, 180),
+        inputMode,
+        typingMs,
+        keystrokes,
+        backspaces,
+        isReadOnly,
+        matchedStage: matchedGuidedIdx >= 0 ? (matchedGuidedIdx + 1) : null,
+        requiredStage: firstUnpassedIdx >= 0 ? (firstUnpassedIdx + 1) : null,
+        outcome,
+        ...extra
+      });
+    };
 
     // 1. WALIDACJA SKŁADNI I OPCJI + STRAŻNIK LABORATORIUM:
     if (!isReadOnly && matchedGuidedIdx === -1) {
@@ -1158,11 +1250,13 @@ const App = {
 
       const syntaxDiag = VFSGit.diagnoseCommandSyntax(cmdText, guidedCmds);
       if (syntaxDiag) {
+        logCmd("syntax_err");
         outEl.innerHTML += `<div class="out">${this.highlightTerminalOutput(syntaxDiag, cmdText)}</div>`;
         outEl.scrollTop = outEl.scrollHeight;
         return;
       }
 
+      logCmd("unsupported_cmd");
       const expectedListHTML = guidedCmds.length > 0
         ? guidedCmds.map((c, idx) => `<br/><span style="color:#facc15;">▶ ${idx + 1}. <code>${this.escapeHtml(c)}</code></span>`).join("")
         : "";
@@ -1179,6 +1273,7 @@ const App = {
         }
         this.cmdHistoryIdx = VFSGit.cmdHistory.length;
         this.cmdDraft = "";
+        logCmd("already_done");
         outEl.innerHTML += `<div class="out" style="color:#4ade80; font-weight:700;">✓ Wszystkie instrukcje modyfikujące w tym zadaniu zostały już wykonane.<br/><span style="color:#e2e8f0; font-weight:400;">Możesz badać stan repozytorium poleceniami odczytu (np. <code>git status</code>, <code>git log</code>, <code>git diff</code>), przejść do następnego kroku lub kliknąć <b>↻ Reset</b>, aby powtórzyć ćwiczenie.</span></div>`;
         outEl.scrollTop = outEl.scrollHeight;
         return;
@@ -1190,6 +1285,7 @@ const App = {
         }
         this.cmdHistoryIdx = VFSGit.cmdHistory.length;
         this.cmdDraft = "";
+        logCmd("already_done");
         const nextCmd = guidedCmds[firstUnpassedIdx] || "";
         const nextHTML = nextCmd ? `<br/><span style="color:#facc15;">▶ ${firstUnpassedIdx + 1}. <code>${this.escapeHtml(nextCmd)}</code></span>` : "";
         outEl.innerHTML += `<div class="out" style="color:#fbbf24; font-weight:700;">ℹ️ Etap ${matchedGuidedIdx + 1} został już wykonany.<br/><span style="color:#e2e8f0; font-weight:400;">Zastosuj teraz kolejną instrukcję zadania (Etap ${firstUnpassedIdx + 1}):</span>${nextHTML}</div>`;
@@ -1228,6 +1324,7 @@ const App = {
         if (skippedToIdx !== -1 || (!isReadOnly && matchedGuidedIdx > firstUnpassedIdx)) {
           const targetStage = skippedToIdx !== -1 ? (skippedToIdx + 1) : (matchedGuidedIdx + 1);
           VFSGit.restoreSnapshot(snapBefore);
+          logCmd("out_of_order_blocked", { attemptedStage: targetStage });
           const reqLabel = step.assertions[firstUnpassedIdx].label;
           outEl.innerHTML += `<div class="out" style="color:#f97316; font-weight:700;">⚠️ Kolejność ćwiczenia: Próbujesz wykonać Etap ${targetStage}, zanim ukończono Etap ${firstUnpassedIdx + 1}!<br/>Najpierw wykonaj: <span style="color:#facc15;">${this.escapeHtml(reqLabel)}</span></div>`;
           outEl.scrollTop = outEl.scrollHeight;
@@ -1239,6 +1336,7 @@ const App = {
       }
     }
 
+    logCmd(res.failed ? "exec_failed" : "ok");
     if (res.out) outEl.innerHTML += `<div class="out">${this.highlightTerminalOutput(res.out, cmdText)}</div>`;
     if (res.failed && firstUnpassedIdx >= 0 && step && Array.isArray(step.assertions)) {
       const reqLabel = step.assertions[firstUnpassedIdx].label;
@@ -1255,11 +1353,13 @@ const App = {
   openUserSessionModal() {
     const modal = document.getElementById("userSessionModalBackdrop");
     if (!modal) return;
+    this.cancelResetAllProgress();
     this.renderUserSessionModal();
     modal.classList.add("open");
   },
 
   closeUserSessionModal() {
+    this.cancelResetAllProgress();
     document.getElementById("userSessionModalBackdrop")?.classList.remove("open");
   },
 
@@ -1270,6 +1370,11 @@ const App = {
   },
 
   renderUserSessionModal() {
+    const verEl = document.getElementById("appVersionBadge");
+    if (verEl) {
+      verEl.textContent = `Wersja ${this.appVersion} • aktualizacja: ${this.appUpdatedDate}`;
+    }
+
     const radPriv = document.getElementById("radStoragePrivate");
     const radShar = document.getElementById("radStorageShared");
     const mode = StorageManager.storageMode || "private";
@@ -1279,10 +1384,33 @@ const App = {
     const codeEl = document.getElementById("currentProgressCodeDisplay");
     if (codeEl) codeEl.textContent = this.encodeProgressCode();
 
+    const statsText = `${this.completedSteps.size}/${this.rawSteps.length} kroków`;
     const statsEl = document.getElementById("progressCodeStatsLabel");
     if (statsEl) {
-      statsEl.textContent = `${this.completedSteps.size}/${this.rawSteps.length} kroków`;
+      statsEl.textContent = statsText;
     }
+    const resetCountEl = document.getElementById("resetAllProgressCountLabel");
+    if (resetCountEl) {
+      resetCountEl.textContent = statsText;
+    }
+  },
+
+  promptResetAllProgress() {
+    const promptRow = document.getElementById("resetAllProgressPromptRow");
+    const confirmRow = document.getElementById("resetAllProgressConfirmRow");
+    const resetCountEl = document.getElementById("resetAllProgressCountLabel");
+    if (resetCountEl) {
+      resetCountEl.textContent = `${this.completedSteps.size}/${this.rawSteps.length} kroków`;
+    }
+    if (promptRow) promptRow.style.display = "none";
+    if (confirmRow) confirmRow.style.display = "block";
+  },
+
+  cancelResetAllProgress() {
+    const promptRow = document.getElementById("resetAllProgressPromptRow");
+    const confirmRow = document.getElementById("resetAllProgressConfirmRow");
+    if (promptRow) promptRow.style.display = "flex";
+    if (confirmRow) confirmRow.style.display = "none";
   },
 
   setDeviceStorageMode(mode) {
@@ -1297,6 +1425,9 @@ const App = {
   },
 
   clearSessionAndReset() {
+    this.logActivityEvent("course_reset", { previousCompletedCount: this.completedSteps.size });
+    this.flushActivityLogs(false);
+    this.cancelResetAllProgress();
     StorageManager.clearAllLocalData();
     this.completedSteps.clear();
     this.instructorMode = false;
@@ -1304,7 +1435,7 @@ const App = {
     this.onboardingSeen = false;
     this.loadStep(0);
     this.renderUserSessionModal();
-    this.showToast("Wyczyszczono sesję i postęp z tego komputera. Stanowisko jest czyste dla kolejnej osoby.");
+    this.showToast("Wyczyszczono sesję i wyzerowano cały postęp w kursie (0/" + this.rawSteps.length + " kroków).");
   },
 
   // Kodowanie 60-bitowego stanu (41 bitów zaliczonych kroków + 6 bitów bieżącego kroku + 3 bity poziomów + 10 bitów sumy kontrolnej CRC) do GLAB-XXXX-XXXX-XXXX
@@ -1593,6 +1724,7 @@ const App = {
 
     this.renderVoiceSelectorUI();
     this.loadAdminFeedback(false);
+    this.loadAdminActivitySummary(false);
 
     const counts = { basic: 0, extended: 0, advanced: 0 };
     this.rawSteps.forEach(s => {
@@ -1638,9 +1770,354 @@ const App = {
         const admModal = document.getElementById("adminModalBackdrop");
         if (admModal && admModal.classList.contains("open")) {
           this.loadAdminFeedback(false);
+          this.loadAdminActivitySummary(false);
         }
       }, 15000);
     }
+  },
+
+  // SYSTEM TELEMETRII I LOGÓW AKTYWNOŚCI UŻYTKOWNIKÓW (SESJE, SPRZĘT, CZAS PRACY, PISANIE VS KLIKANIE, RETENCJA AUDIO)
+  initTelemetrySystem() {
+    this.telemetrySessionId = "ses_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 7);
+    this.telemetrySeq = 0;
+    this.telemetryQueue = [];
+    this.telemetryLastInputTs = Date.now();
+    this.telemetryIsIdle = false;
+    this.telemetryDeviceProfile = this.collectDeviceTelemetryProfile();
+
+    // Asynchroniczne dociągnięcie szczegółowej architektury procesora i wersji systemu (User-Agent Client Hints)
+    if (typeof navigator !== "undefined" && navigator.userAgentData && typeof navigator.userAgentData.getHighEntropyValues === "function") {
+      navigator.userAgentData.getHighEntropyValues(["architecture", "bitness", "model", "platformVersion", "fullVersionList"])
+        .then(hints => {
+          if (hints) {
+            if (hints.architecture) this.telemetryDeviceProfile.cpuArch = `${hints.architecture}${hints.bitness ? ('-' + hints.bitness) : ''}`;
+            if (hints.platformVersion) this.telemetryDeviceProfile.osVersionHint = hints.platformVersion;
+            if (hints.model) this.telemetryDeviceProfile.deviceModel = hints.model;
+          }
+        })
+        .catch(() => {});
+    }
+
+    this.logActivityEvent("session_start", {
+      appVersion: this.appVersion,
+      storageMode: StorageManager.storageMode || "private",
+      activeProfile: window.COURSE_CONFIG?.activeProfile || "basic",
+      completedCount: this.completedSteps.size
+    });
+
+    if (typeof window !== "undefined" && typeof document !== "undefined") {
+      const markActiveInput = () => {
+        const now = Date.now();
+        if (this.telemetryIsIdle) {
+          const idleDur = now - this.telemetryLastInputTs;
+          this.telemetryIsIdle = false;
+          this.logActivityEvent("user_resumed", { afterIdleMs: idleDur });
+        }
+        this.telemetryLastInputTs = now;
+      };
+
+      ["mousedown", "keydown", "wheel", "touchstart"].forEach(evName => {
+        window.addEventListener(evName, markActiveInput, { passive: true });
+      });
+
+      document.addEventListener("visibilitychange", () => {
+        const now = Date.now();
+        if (document.visibilityState === "hidden") {
+          this.telemetryTabHiddenAt = now;
+          this.logActivityEvent("visibility_change", {
+            state: "hidden",
+            directorPlaying: this.directorPlaying && !this.directorPaused,
+            beatIdx: this.directorPlaying ? this.directorBeatIdx : null
+          });
+          this.flushActivityLogs(true);
+        } else {
+          const awayMs = this.telemetryTabHiddenAt > 0 ? Math.max(0, now - this.telemetryTabHiddenAt) : 0;
+          this.telemetryTabHiddenAt = 0;
+          this.telemetryLastInputTs = now;
+          this.telemetryIsIdle = false;
+          this.logActivityEvent("visibility_change", { state: "visible", awayMs });
+        }
+      });
+
+      const onUnload = () => {
+        this.logActivityEvent("session_end", {
+          deltaActiveMs: this.telemetryUnsentActiveMs,
+          deltaIdleMs: this.telemetryUnsentIdleMs,
+          deltaAudioMs: this.telemetryUnsentAudioMs,
+          directorPlayingOnExit: this.directorPlaying && !this.directorPaused,
+          beatIdxOnExit: this.directorPlaying ? this.directorBeatIdx : null
+        });
+        this.telemetryUnsentActiveMs = 0;
+        this.telemetryUnsentIdleMs = 0;
+        this.telemetryUnsentAudioMs = 0;
+        this.flushActivityLogs(true);
+      };
+      window.addEventListener("pagehide", onUnload);
+      window.addEventListener("beforeunload", onUnload);
+
+      if (this.telemetryTickTimer) clearInterval(this.telemetryTickTimer);
+      this.telemetryTickTimer = setInterval(() => {
+        const now = Date.now();
+        const tabVisible = document.visibilityState !== "hidden";
+        const audioActive = Boolean(this.directorPlaying && !this.directorPaused);
+        const recentlyInteracted = (now - this.telemetryLastInputTs) < 60000;
+
+        if (tabVisible && (recentlyInteracted || audioActive)) {
+          this.telemetryUnsentActiveMs += 1000;
+          if (audioActive) {
+            this.telemetryUnsentAudioMs += 1000;
+          }
+        } else {
+          this.telemetryUnsentIdleMs += 1000;
+          if (!this.telemetryIsIdle && (now - this.telemetryLastInputTs) >= 60000 && !audioActive) {
+            this.telemetryIsIdle = true;
+            this.logActivityEvent("user_idle", { reason: tabVisible ? "no_input_60s" : "tab_hidden" });
+          }
+        }
+      }, 1000);
+
+      if (this.telemetryFlushTimer) clearInterval(this.telemetryFlushTimer);
+      this.telemetryFlushTimer = setInterval(() => {
+        if (this.telemetryUnsentActiveMs >= 5000 || this.telemetryUnsentIdleMs >= 10000 || this.telemetryUnsentAudioMs >= 3000) {
+          this.logActivityEvent("heartbeat", {
+            deltaActiveMs: this.telemetryUnsentActiveMs,
+            deltaIdleMs: this.telemetryUnsentIdleMs,
+            deltaAudioMs: this.telemetryUnsentAudioMs
+          });
+          this.telemetryUnsentActiveMs = 0;
+          this.telemetryUnsentIdleMs = 0;
+          this.telemetryUnsentAudioMs = 0;
+        }
+        this.flushActivityLogs(false);
+      }, 10000);
+    }
+  },
+
+  collectDeviceTelemetryProfile() {
+    if (typeof window === "undefined" || typeof navigator === "undefined") return {};
+    const ua = String(navigator.userAgent || "");
+
+    let os = "Nieznany OS";
+    if (/Windows NT 10\.0/i.test(ua)) os = "Windows 10/11";
+    else if (/Windows NT/i.test(ua)) os = "Windows";
+    else if (/Android/i.test(ua)) os = "Android";
+    else if (/iPhone|iPad|iPod/i.test(ua)) os = "iOS / iPadOS";
+    else if (/Mac OS X|Macintosh/i.test(ua)) os = "macOS";
+    else if (/CrOS/i.test(ua)) os = "ChromeOS";
+    else if (/Linux/i.test(ua)) os = "Linux";
+
+    let browser = "Inna przeglądarka";
+    const edg = ua.match(/Edg\/([\d.]+)/);
+    const opr = ua.match(/OPR\/([\d.]+)/);
+    const chr = ua.match(/Chrome\/([\d.]+)/);
+    const ffx = ua.match(/Firefox\/([\d.]+)/);
+    const saf = ua.match(/Version\/([\d.]+).*Safari/);
+    if (edg) browser = `Edge ${edg[1].split(".")[0]}`;
+    else if (opr) browser = `Opera ${opr[1].split(".")[0]}`;
+    else if (chr) browser = `Chrome ${chr[1].split(".")[0]}`;
+    else if (ffx) browser = `Firefox ${ffx[1].split(".")[0]}`;
+    else if (saf) browser = `Safari ${saf[1].split(".")[0]}`;
+
+    const isMobile = /Mobi|Android|iPhone|iPad/i.test(ua);
+    let gpu = "";
+    try {
+      const canvas = document.createElement("canvas");
+      const gl = canvas.getContext("webgl") || canvas.getContext("experimental-webgl");
+      if (gl) {
+        const dbg = gl.getExtension("WEBGL_debug_renderer_info");
+        if (dbg) {
+          gpu = String(gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) || "");
+        }
+      }
+    } catch (e) {}
+
+    const conn = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
+    return {
+      os,
+      browser,
+      platform: String(navigator.platform || ""),
+      deviceType: isMobile ? "Mobile/Tablet" : "Desktop",
+      cpuCores: navigator.hardwareConcurrency || null,
+      ramGB: navigator.deviceMemory || null,
+      gpu: gpu.slice(0, 140) || null,
+      screen: typeof screen !== "undefined" ? `${screen.width}x${screen.height} @${Number(window.devicePixelRatio || 1).toFixed(2)}x` : "",
+      viewport: `${window.innerWidth}x${window.innerHeight}`,
+      touchPoints: navigator.maxTouchPoints || 0,
+      language: navigator.language || "",
+      timezone: (typeof Intl !== "undefined" && Intl.DateTimeFormat) ? (Intl.DateTimeFormat().resolvedOptions().timeZone || "") : "",
+      netType: conn ? `${conn.effectiveType || "?"} (${conn.downlink || "?"} Mb/s, RTT ${conn.rtt || "?"}ms)` : null
+    };
+  },
+
+  logActivityEvent(type, data = {}, explicitStepId = null) {
+    const step = this.allSteps[this.currentStepIdx];
+    const stepId = explicitStepId || (step ? step.id : (this.telemetryCurrentStepId || "m00_s01"));
+    this.telemetrySeq = (this.telemetrySeq || 0) + 1;
+    this.telemetryQueue.push({
+      seq: this.telemetrySeq,
+      ts: new Date().toISOString(),
+      type,
+      stepId,
+      stepIdx: this.currentStepIdx,
+      progressCode: this.encodeProgressCode(),
+      data
+    });
+    if (this.telemetryQueue.length >= 15) {
+      this.flushActivityLogs(false);
+    }
+  },
+
+  flushActivityLogs(useBeacon = false) {
+    if (!Array.isArray(this.telemetryQueue) || this.telemetryQueue.length === 0) return;
+    if (typeof window === "undefined") return;
+
+    const batch = this.telemetryQueue.splice(0, this.telemetryQueue.length);
+    const currCode = this.encodeProgressCode();
+    if (currCode && !this.knownProgressCodes.includes(currCode)) {
+      this.knownProgressCodes.push(currCode);
+    }
+    const step = this.allSteps[this.currentStepIdx];
+
+    const payloadObj = {
+      clientId: this.feedbackClientId || "anon",
+      sessionId: this.telemetrySessionId || "ses_default",
+      author: this.feedbackAuthor || "Anonim",
+      progressCode: currCode,
+      knownProgressCodes: this.knownProgressCodes,
+      storageMode: StorageManager.storageMode || "private",
+      appVersion: this.appVersion,
+      activeProfile: window.COURSE_CONFIG?.activeProfile || "basic",
+      currentStepId: step ? step.id : (this.telemetryCurrentStepId || "m00_s01"),
+      completedStepsCount: this.completedSteps.size,
+      completedSteps: Array.from(this.completedSteps),
+      device: {
+        ...this.telemetryDeviceProfile,
+        viewport: `${window.innerWidth}x${window.innerHeight}`
+      },
+      events: batch
+    };
+
+    const jsonStr = JSON.stringify(payloadObj);
+    if (useBeacon && typeof navigator !== "undefined" && typeof navigator.sendBeacon === "function") {
+      try {
+        const blob = new Blob([jsonStr], { type: "application/json" });
+        if (navigator.sendBeacon("/api/activity/log", blob)) {
+          return;
+        }
+      } catch (e) {}
+    }
+
+    if (typeof fetch === "function") {
+      fetch("/api/activity/log", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: jsonStr,
+        keepalive: true
+      }).catch(() => {});
+    }
+  },
+
+  formatDurationHuman(ms) {
+    const totalSec = Math.max(0, Math.round(Number(ms || 0) / 1000));
+    const m = Math.floor(totalSec / 60);
+    const s = totalSec % 60;
+    if (m === 0) return `${s}s`;
+    const h = Math.floor(m / 60);
+    if (h > 0) return `${h}h ${m % 60}m ${s}s`;
+    return `${m}m ${s}s`;
+  },
+
+  async loadAdminActivitySummary(showToastOnDone = false) {
+    if (typeof fetch !== "function") return;
+    try {
+      const resp = await fetch("/api/activity/admin-summary");
+      if (!resp.ok) return;
+      const data = await resp.json();
+      if (data && data.ok) {
+        this.adminActivitySummary = data;
+        this.renderAdminActivitySessions();
+        if (showToastOnDone) {
+          this.showToast(`Odświeżono logi aktywności (${data.totalSessions} sesji, ${data.totalEvents} zdarzeń).`);
+        }
+      }
+    } catch (e) {}
+  },
+
+  renderAdminActivitySessions() {
+    if (typeof document === "undefined") return;
+    const data = this.adminActivitySummary;
+    const badgeEl = document.getElementById("adminActivitySummaryBadge");
+    const listEl = document.getElementById("adminActivitySessionsList");
+    if (!listEl) return;
+
+    if (!data || !Array.isArray(data.sessions) || data.sessions.length === 0) {
+      if (badgeEl) badgeEl.textContent = "0 sesji • 0 zdarzeń";
+      listEl.innerHTML = `<div style="background:#0f172a; border:1px dashed #334155; border-radius:6px; padding:12px; text-align:center; color:#94a3b8; font-size:12px;">Brak zapisanych sesji na serwerze. Logi zaczną pojawiać się automatycznie w trakcie korzystania z aplikacji.</div>`;
+      return;
+    }
+
+    if (badgeEl) {
+      badgeEl.textContent = `${data.totalSessions} sesji • ${data.uniqueClients || 1} użytk. • ${data.totalEvents} zdarzeń`;
+    }
+
+    listEl.innerHTML = data.sessions.map(s => {
+      const dev = s.device || {};
+      const net = s.net || {};
+      const tim = s.timing || {};
+      const cnt = s.counters || {};
+      const stepMap = s.stepMetrics || {};
+      const stepList = Object.values(stepMap);
+
+      const hwSummary = [
+        dev.os || "OS?",
+        dev.browser || "Przeglądarka?",
+        dev.cpuCores ? `${dev.cpuCores} rdzeni CPU` : null,
+        dev.ramGB ? `${dev.ramGB} GB RAM` : null,
+        dev.screen || null,
+        dev.gpu ? dev.gpu.replace(/^ANGLE \(([^,]+),?\s*([^)]*)\)$/i, "$1 $2").slice(0, 48) : null
+      ].filter(Boolean).join(" • ");
+
+      const stepDetailsHTML = stepList.length > 0
+        ? stepList.map(sm => {
+            const beatInfo = sm.totalBeats > 0
+              ? `lektor: ${sm.maxBeatIdx >= 0 ? (sm.maxBeatIdx + 1) : 0}/${sm.totalBeats} (${sm.maxBeatProgressPct || 0}%)`
+              : "lektor: 0";
+            const stopsInfo = Array.isArray(sm.stopPoints) && sm.stopPoints.length > 0
+              ? ` [przerwania: ${sm.stopPoints.map(sp => `fragm.${sp.beatIdx + 1}@${sp.progressPct}%`).join(", ")}]`
+              : "";
+            return `<span style="display:inline-block; background:#020617; border:1px solid ${sm.completed ? '#166534' : '#334155'}; border-radius:4px; padding:2px 6px; margin:2px; font-size:10.5px;">
+              <b style="color:${sm.completed ? '#4ade80' : '#38bdf8'};">${this.escapeHtml(sm.stepId)}${sm.completed ? ' ✓' : ''}</b>:
+              akt. <b>${this.formatDurationHuman(sm.activeMs)}</b> | audio <b>${this.formatDurationHuman(sm.audioListenedMs)}</b> (${beatInfo}${stopsInfo}) | pisał: <b>${sm.cmdsTyped || 0}</b> / klikał: <b>${sm.cmdsClicked || 0}</b>
+            </span>`;
+          }).join("")
+        : `<span style="color:#64748b; font-size:11px;">Brak szczegółów kroków</span>`;
+
+      return `
+        <div style="background:#0f172a; border:1px solid #334155; border-radius:6px; padding:8px 10px; font-size:11.5px; display:flex; flex-direction:column; gap:5px;">
+          <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap; border-bottom:1px solid #1e293b; padding-bottom:4px;">
+            <div>
+              <b style="color:#facc15;">👤 ${this.escapeHtml(s.author || 'Anonim')}</b>
+              <code style="color:#94a3b8; font-size:10.5px; margin-left:4px;">${this.escapeHtml(s.clientId)}</code>
+              <span style="color:#38bdf8; font-weight:700; margin-left:6px;">IP: ${this.escapeHtml(net.ip || 'lokalne')}</span>
+              <span style="color:#cbd5e1; margin-left:6px;">Kod: <code style="color:#4ade80;">${this.escapeHtml(s.progressCode || '')}</code> (${s.completedStepsCount || 0}/41 ✓, krok: <b>${this.escapeHtml(s.currentStepId || '')}</b>)</span>
+            </div>
+            <div style="font-size:10.5px; color:#94a3b8;">
+              Start: <b>${this.formatFeedbackTimestamp(s.startedAt)}</b> • Ostatnio: <b>${this.formatFeedbackTimestamp(s.lastSeenAt)}</b> ${s.endedAt ? '<span style="color:#f87171;">(Zakończona)</span>' : '<span style="color:#4ade80;">● Aktywna</span>'}
+            </div>
+          </div>
+          <div style="color:#cbd5e1; font-size:11px; display:flex; justify-content:space-between; flex-wrap:wrap; gap:6px;">
+            <span>💻 <b>Sprzęt/System:</b> ${this.escapeHtml(hwSummary)}</span>
+            <span>⏱️ <b>Czas aktywny:</b> <b style="color:#4ade80;">${this.formatDurationHuman(tim.totalActiveMs)}</b> (w tle/przerwy: ${this.formatDurationHuman(tim.totalIdleMs)}, wyjścia z karty: ${tim.tabBlurCount || 0}x)</span>
+          </div>
+          <div style="color:#cbd5e1; font-size:11px; display:flex; justify-content:space-between; flex-wrap:wrap; gap:6px;">
+            <span>⌨️ <b>Terminal (Pisał vs Klikał):</b> wpisane ręcznie: <b style="color:#facc15;">${cnt.cmdsTyped || 0}</b> (${cnt.totalKeystrokes || 0} zn., ${cnt.totalBackspaces || 0} Backspace) | kliknięte: <b style="color:#38bdf8;">${cnt.cmdsClicked || 0}</b> | wklejone: <b>${cnt.cmdsPasted || 0}</b> | błędy: <b style="color:#f87171;">${cnt.cmdsFailed || 0}</b></span>
+            <span>🔊 <b>Lektor (START):</b> słuchano <b style="color:#4ade80;">${this.formatDurationHuman(tim.totalAudioListenedMs)}</b> (start: ${cnt.directorStarts || 0}x, pauzy: ${cnt.directorPauses || 0}x, przerwano: ${cnt.directorStopsEarly || 0}x, do końca: ${cnt.directorCompletions || 0}x)</span>
+          </div>
+          <div style="border-top:1px dashed #1e293b; padding-top:4px; line-height:1.4;">
+            ${stepDetailsHTML}
+          </div>
+        </div>`;
+    }).join("");
   },
 
   formatFeedbackTimestamp(isoStr) {
@@ -2678,7 +3155,15 @@ const App = {
       StorageManager.saveState(this.getSerializableState(), this.allSteps.length);
 
       if (justPassedNow) {
+        const activeTimeSinceEnter = Math.max(0, Date.now() - (this.telemetryStepEnterTs || Date.now()));
+        this.logActivityEvent("step_complete", {
+          via: "terminal",
+          timeSinceEnterMs: activeTimeSinceEnter,
+          completedTotal: this.completedSteps.size
+        });
+        this.flushActivityLogs(false);
         if (this.directorPlaying) {
+          this.directorStopReason = "task_completed";
           this.toggleDirector(false);
         }
         this.speakPreview("Zadanie praktyczne zostało zaliczone. Kliknij przycisk Następny krok.", "step_completed");
@@ -2778,10 +3263,20 @@ const App = {
   togglePauseDirector() {
     if (!this.directorPlaying) return;
     const audio = this.getAudioPlayerElement();
+    const step = this.allSteps[this.currentStepIdx];
+    const beats = step ? this.getEffectiveBeats(step) : [];
+    const beat = beats[this.directorBeatIdx];
+    const progressPct = Math.round(this.getCurrentBeatSpeechProgress(beat) * 100);
 
     if (!this.directorPaused) {
       // Wstrzymanie (PAUZA) — zamrażamy dźwięk, kursor-latarkę i podświetlenie w bieżącym punkcie
       this.directorPaused = true;
+      this.logActivityEvent("director_pause", {
+        beatIdx: this.directorBeatIdx,
+        totalBeats: beats.length,
+        progressPct,
+        reason: "user_pause_btn"
+      });
       clearTimeout(this.directorTimer);
       if (this.selectedVoiceId === "mp3_eleven" && audio) {
         try { audio.pause(); } catch (e) {}
@@ -2792,6 +3287,11 @@ const App = {
     } else {
       // Wznowienie (RESUME) od miejsca zatrzymania
       this.directorPaused = false;
+      this.logActivityEvent("director_resume", {
+        beatIdx: this.directorBeatIdx,
+        totalBeats: beats.length,
+        progressPct
+      });
       this.updateDirectorButtonsUI();
       if (typeof this.pendingTaskBodyPlay === "function") {
         const fn = this.pendingTaskBodyPlay;
@@ -3729,14 +4229,41 @@ const App = {
   },
 
   toggleDirector(force) {
+    const wasPlaying = this.directorPlaying;
+    const step = this.allSteps[this.currentStepIdx];
+    const beats = step ? this.getEffectiveBeats(step) : [];
+    const prevBeat = beats[this.directorBeatIdx];
+    const prevProgressPct = prevBeat ? Math.round(this.getCurrentBeatSpeechProgress(prevBeat) * 100) : 0;
+
     this.directorPlaying = typeof force === "boolean" ? force : !this.directorPlaying;
     this.directorPaused = false;
     this.updateDirectorButtonsUI();
 
     if (this.directorPlaying) {
+      this.directorStopReason = null;
       this.directorBeatIdx = 0;
+      this.logActivityEvent("director_start", {
+        totalBeats: beats.length,
+        voiceId: this.selectedVoiceId
+      });
       this.runDirectorBeat();
     } else {
+      if (wasPlaying) {
+        const reason = this.directorStopReason || "user_stop_btn";
+        this.directorStopReason = null;
+        if (reason === "finished_all") {
+          this.logActivityEvent("director_finish", {
+            totalBeats: beats.length
+          });
+        } else {
+          this.logActivityEvent("director_stop", {
+            beatIdx: this.directorBeatIdx,
+            totalBeats: beats.length,
+            progressPct: prevProgressPct,
+            reason
+          });
+        }
+      }
       this.stopAllAudio();
       this.directorFocusCardId = null;
       this.maximizedCardId = null;
@@ -3855,9 +4382,17 @@ const App = {
     const beats = this.getEffectiveBeats(step);
     const beat = beats[this.directorBeatIdx];
     if (!beat) {
+      this.directorStopReason = "finished_all";
       this.toggleDirector(false);
       return;
     }
+
+    this.logActivityEvent("director_beat", {
+      beatIdx: this.directorBeatIdx,
+      totalBeats: beats.length,
+      audioId: beat.audioId || null,
+      cardId: beat.card || null
+    });
 
     const badge = document.getElementById("directorBadge");
     if (badge) {
@@ -3906,6 +4441,7 @@ const App = {
           this.runDirectorBeat();
         }
       } else {
+        this.directorStopReason = "finished_all";
         this.toggleDirector(false);
       }
     };
@@ -4005,6 +4541,10 @@ const App = {
     const inputEl = document.getElementById("cmdIn");
     if (!inputEl) return;
 
+    inputEl.addEventListener("paste", () => {
+      this.cmdPastedFlag = true;
+    });
+
     inputEl.addEventListener("keydown", async (e) => {
       // Skrót Ctrl+L do czyszczenia terminala
       if (e.ctrlKey && e.key.toLowerCase() === "l") {
@@ -4013,9 +4553,20 @@ const App = {
         return;
       }
 
+      if (e.key === "Backspace" || e.key === "Delete") {
+        this.cmdBackspaceCount = (this.cmdBackspaceCount || 0) + 1;
+      } else if (e.key && e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        if (!this.cmdTypingStartTs) {
+          this.cmdTypingStartTs = Date.now();
+        }
+        this.cmdKeystrokeCount = (this.cmdKeystrokeCount || 0) + 1;
+        this.cmdUsedHistoryFlag = false;
+      }
+
       // Strzałka w górę: cofanie się po historii komend
       if (e.key === "ArrowUp") {
         e.preventDefault();
+        this.cmdUsedHistoryFlag = true;
         const hist = VFSGit.cmdHistory || [];
         if (hist.length === 0) return;
         if (this.cmdHistoryIdx >= hist.length) {
@@ -4035,6 +4586,7 @@ const App = {
       // Strzałka w dół: przejście w przód po historii komend aż do bieżącego szkicu
       if (e.key === "ArrowDown") {
         e.preventDefault();
+        this.cmdUsedHistoryFlag = true;
         const hist = VFSGit.cmdHistory || [];
         if (hist.length === 0) return;
         if (this.cmdHistoryIdx < hist.length - 1) {
@@ -4094,6 +4646,7 @@ const App = {
     }
 
     VFSGit.worktree[file] = newVal;
+    this.logActivityEvent("editor_save", { file, length: String(newVal || "").length });
     this.switchWorkbench("term");
     this.renderInspector();
     this.evaluateAssertions();
@@ -4104,6 +4657,7 @@ const App = {
   },
 
   showHint(event) {
+    this.logActivityEvent("hint_toggle", {});
     this.togglePinExpandable("hintWrap", event);
   },
 
@@ -4111,6 +4665,7 @@ const App = {
     const step = this.allSteps[this.currentStepIdx];
     if (step) {
       this.completedSteps.delete(step.id);
+      this.logActivityEvent("step_reset", { source: "task_bar" }, step.id);
     }
     this.loadStep(this.currentStepIdx);
     this.showToast("Zresetowano stan repozytorium oraz postęp bieżącego zadania.");
@@ -4160,6 +4715,7 @@ const App = {
     if (event) event.stopPropagation();
     // Zalicza wyłącznie wskazany krok, nie zmieniając statusu żadnych wcześniejszych ani późniejszych części
     this.completedSteps.add(stepId);
+    this.logActivityEvent("step_complete", { via: "fast_forward" }, stepId);
     this.updateTopProgress();
     this.renderDrawer();
     StorageManager.saveState(this.getSerializableState(), this.allSteps.length);
@@ -4168,6 +4724,7 @@ const App = {
   resetStepCompletion(stepId, event) {
     if (event) event.stopPropagation();
     this.completedSteps.delete(stepId);
+    this.logActivityEvent("step_reset", { source: "drawer" }, stepId);
     if (this.allSteps[this.currentStepIdx]?.id === stepId) {
       this.loadStep(this.currentStepIdx);
     } else {

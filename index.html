@@ -189,7 +189,10 @@
             <span>Zanim zaczniesz — Jak zachować swój postęp w kursie?</span>
           </h2>
         </div>
-        <button class="btn-top" onclick="App.closeUserSessionModal()">✕ Zamknij</button>
+        <div style="display:flex; align-items:center; gap:8px;">
+          <span id="appVersionBadge" style="font-family:var(--mono); font-size:11px; color:#94a3b8; background:#0f172a; border:1px solid #334155; border-radius:4px; padding:4px 8px; white-space:nowrap;" title="Numer wersji aplikacji oraz data ostatniej aktualizacji">Wersja 0.11 • aktualizacja: 2026-11-08</span>
+          <button class="btn-top" onclick="App.closeUserSessionModal()">✕ Zamknij</button>
+        </div>
       </div>
 
       <div class="admin-modal-body" style="gap:12px;">
@@ -219,9 +222,20 @@
               </label>
             </div>
 
-            <div style="padding-top:6px; border-top:1px solid #334155; display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap;">
-              <span style="font-size:11px; color:#94a3b8;">Kończysz pracę na cudzym komputerze?</span>
-              <button class="btn-top btn-xs" style="border-color:#ef4444; color:#fca5a5;" onclick="App.clearSessionAndReset()">Wyczyść sesję z tego komputera</button>
+            <div style="padding-top:8px; border-top:1px solid #334155;">
+              <div id="resetAllProgressPromptRow" style="display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap;">
+                <span style="font-size:11px; color:#94a3b8;">Chcesz wyzerować cały kurs naraz lub wyczyścić cudzy komputer?</span>
+                <button class="btn-top btn-xs" style="border-color:#ef4444; color:#fca5a5;" onclick="App.promptResetAllProgress()">↺ Resetuj cały postęp / Wyczyść sesję...</button>
+              </div>
+              <div id="resetAllProgressConfirmRow" style="display:none; background:#1f1215; border:1px solid #ef4444; border-radius:6px; padding:8px 10px; margin-top:4px;">
+                <div style="font-size:11.5px; color:#fecaca; font-weight:700; margin-bottom:6px; line-height:1.4;">
+                  ⚠️ Czy na pewno wyzerować cały postęp w kursie (<span id="resetAllProgressCountLabel">0/41 kroków</span>) i wyczyścić sesję z tej przeglądarki?
+                </div>
+                <div style="display:flex; justify-content:flex-end; gap:6px; flex-wrap:wrap;">
+                  <button class="btn-top btn-xs" onclick="App.cancelResetAllProgress()">Anuluj</button>
+                  <button class="btn-top btn-xs" style="background:#dc2626; border-color:#ef4444; color:#fff; font-weight:800;" onclick="App.clearSessionAndReset()">Tak, wyzeruj cały postęp</button>
+                </div>
+              </div>
             </div>
           </div>
 
@@ -511,10 +525,26 @@
           <div id="adminFeedbackList" style="max-height:290px; overflow-y:auto; display:flex; flex-direction:column; gap:8px; padding-right:4px;"></div>
         </div>
 
+        <!-- Sekcja 4: Logi Aktywności, Sesje Użytkowników i Dane do Analityki -->
+        <div class="admin-box">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; gap:8px; flex-wrap:wrap;">
+            <h4 style="margin-bottom:0; display:flex; align-items:center; gap:8px;">
+              <span>4. Logi Aktywności i Sesje Użytkowników (Dane do Analityki)</span>
+              <span id="adminActivitySummaryBadge" class="feedback-status-pill pill-read">0 sesji • 0 zdarzeń</span>
+            </h4>
+            <div style="display:flex; gap:6px; align-items:center; flex-wrap:wrap;">
+              <button class="btn-top btn-xs" onclick="App.loadAdminActivitySummary(true)">↻ Odśwież logi</button>
+              <button class="btn-top btn-xs btn-director" onclick="window.open('/api/activity/export-sessions', '_blank')" title="Pobierz zagregowane sesje użytkowników (IP, sprzęt, czasy kroków, pisanie vs klikanie, retencja lektora)">⬇ Pobierz sesje (.json)</button>
+              <button class="btn-top btn-xs" onclick="window.open('/api/activity/export-events', '_blank')" title="Pobierz pełny strumień wszystkich zdarzeń (JSON Lines) do szczegółowej analityki">⬇ Strumień zdarzeń (.jsonl)</button>
+            </div>
+          </div>
+          <div id="adminActivitySessionsList" style="max-height:280px; overflow-y:auto; display:flex; flex-direction:column; gap:6px; padding-right:4px;"></div>
+        </div>
+
         <!-- Tabela przypisania kroków do poziomów -->
         <div class="admin-box">
           <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
-            <h4>4. Matryca Kroków – Przypisanie do Wariantów (Możesz zmienić poziom dowolnego kroku)</h4>
+            <h4>5. Matryca Kroków – Przypisanie do Wariantów (Możesz zmienić poziom dowolnego kroku)</h4>
             <button class="btn-top btn-director" onclick="App.exportProfileConfigJS()">Pobierz zaktualizowany course-profiles.js</button>
           </div>
           <div class="admin-table-wrap">
@@ -753,6 +783,6 @@
   <script src="curriculum/m05-remotes-gh.js?v=20261107c"></script>
   <script src="engine/storage-scorm.js?v=20261107c"></script>
   <script src="engine/vfs-git.js?v=20261107c"></script>
-  <script src="engine/app.js?v=20261108a"></script>
+  <script src="engine/app.js?v=20261108c"></script>
 </body>
 </html>
